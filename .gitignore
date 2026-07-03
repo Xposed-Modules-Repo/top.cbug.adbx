@@ -25,3 +25,8 @@ local.properties
 /adb_x.b64.txt
 # Xposed repo staging (local mirror)
 /.xposed_repo
+
+app/build/
+app/release/
+app/debug/
+.gradle/

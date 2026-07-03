@@ -59,6 +59,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk ADB_X-release.apk
 
       - name: Extract version info
         id: apk
@@ -77,13 +78,13 @@ jobs:
           body: |
             ## ADB_X v${{ steps.apk.outputs.versionName }}
             Xposed module — wireless ADB enhancement.
-          files: app/build/outputs/apk/release/app-release.apk
+          files: ADB_X-release.apk
           draft: false
           prerelease: false
 
       # ---- Full source mirror to Xposed-Modules-Repo (requires XPOSED_TOKEN secret) ----
       - name: Mirror full source to Xposed repo
-        if: ${{ secrets.XPOSED_TOKEN != '' }}
+        if: env.XPOSED_TOKEN != ''
         env:
           VC: ${{ steps.apk.outputs.versionCode }}
           VN: ${{ steps.apk.outputs.versionName }}
@@ -127,7 +128,7 @@ jobs:
           echo "- Release v$VN" >> changelog.txt
 
       - name: Push mirror + tag to Xposed repo
-        if: ${{ secrets.XPOSED_TOKEN != '' }}
+        if: env.XPOSED_TOKEN != ''
         env:
           VC: ${{ steps.apk.outputs.versionCode }}
           VN: ${{ steps.apk.outputs.versionName }}
