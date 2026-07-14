@@ -28,7 +28,7 @@ object AdbSystemHooks {
     private val registered = AtomicBoolean(false)
 
     /** SSID we already enabled ADB for — avoid re-enabling on every event. */
-    private var lastEnabledSsid: String = ""
+    @Volatile private var lastEnabledSsid: String = ""
 
     /** Retry: when WiFi is up but no config yet, poll a few times. */
     private var retryCount = AtomicInteger(0)
@@ -167,6 +167,7 @@ object AdbSystemHooks {
     private data class AdbConfig(
         val autoEnable: Boolean = true,
         val autoDisable: Boolean = false,
+        val bootStart: Boolean = true,
         val fixedPortEnabled: Boolean = false,
         val fixedPort: Int = 5555,
         val trustedSsids: Set<String> = emptySet()
@@ -184,6 +185,7 @@ object AdbSystemHooks {
             AdbConfig(
                 autoEnable = map.getOrDefault("auto_enable", "true").toBooleanStrictOrNull() ?: true,
                 autoDisable = map.getOrDefault("auto_disable", "false").toBooleanStrictOrNull() ?: false,
+                bootStart = map.getOrDefault("boot_start", "true").toBooleanStrictOrNull() ?: true,
                 fixedPortEnabled = map.getOrDefault("fixed_port_enabled", "false").toBooleanStrictOrNull() ?: false,
                 fixedPort = map.getOrDefault("fixed_port", "5555").toIntOrNull() ?: 5555,
                 trustedSsids = map.getOrDefault("trusted_ssids", "")

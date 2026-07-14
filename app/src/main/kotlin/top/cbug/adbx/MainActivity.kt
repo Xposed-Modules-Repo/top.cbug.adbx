@@ -120,16 +120,16 @@ class MainActivity : AppCompatActivity() {
             mainHandler.post {
                 requestNeededPermissions()
                 doMinimalRefresh()
-                AdbMonitorService.start(this)
             }
         } catch (t: Throwable) {
             Log.e(TAG, "onCreate crashed", t)
             try {
                 val tv = TextView(this)
-                tv.text = "Init failed: " + t.message + "\n\nCheck logcat (tag: ADB_X_Main)"
+                tv.text = getString(R.string.msg_init_failed, t.message ?: "")
                 tv.setPadding(32, 32, 32, 32)
                 setContentView(tv)
             } catch (_: Throwable) { }
+            finish()
         }
     }
 
@@ -260,21 +260,21 @@ class MainActivity : AppCompatActivity() {
             val portText = etPort.text?.toString()?.trim().orEmpty()
             val port = portText.toIntOrNull()
             if (port == null || port < 1024 || port > 65535) {
-                tilPort.error = "Port must be 1024-65535"
+                tilPort.error = getString(R.string.err_port_range)
                 return@setOnClickListener
-            }
-            tilPort.error = null
-            AppSettings.fixedPort = port
-            AppSettings.save(this)
-            toast("Setting port $port...")
-            bgScope.launch {
+                }
+                tilPort.error = null
+                AppSettings.fixedPort = port
+                AppSettings.save(this)
+                toast(getString(R.string.msg_setting_port, port))
+                bgScope.launch {
                 val ok = AdbHelper.setFixedPort(port)
                 withContext(Dispatchers.Main) {
-                    toast(if (ok) "Fixed port: $port" else "Failed - check ROOT")
+                    toast(getString(if (ok) R.string.msg_fixed_port_ok else R.string.msg_fixed_port_fail, port))
                 }
                 doFullRefresh()
-            }
-        }
+                }
+                }
         btnRefreshWifi.setOnClickListener {
             requestNeededPermissions()
             refreshWifiList()
@@ -298,12 +298,12 @@ class MainActivity : AppCompatActivity() {
             if (!isChecked) return@addOnButtonCheckedListener
             when (checkedId) {
                 R.id.btnEnableAdb -> bgScope.launch {
-                    withContext(Dispatchers.Main) { toast("Enabling wireless ADB...") }
+                    withContext(Dispatchers.Main) { toast(getString(R.string.msg_enabling_adb)) }
                     AdbHelper.enableWirelessAdb()
                     doFullRefresh()
                 }
                 R.id.btnDisableAdb -> bgScope.launch {
-                    withContext(Dispatchers.Main) { toast("Disabling wireless ADB...") }
+                    withContext(Dispatchers.Main) { toast(getString(R.string.msg_disabling_adb)) }
                     AdbHelper.disableWirelessAdb()
                     doFullRefresh()
                 }
@@ -318,14 +318,14 @@ class MainActivity : AppCompatActivity() {
                 "$cachedLocalIp:$cachedPort" else cachedPort
             if (text.isNotEmpty()) {
                 copyToClipboard("ADB address", text)
-                toast("Copied: $text")
+                toast(getString(R.string.msg_copied, text))
             }
         }
         // Click-to-copy: WiFi card copies local IP
         siWifi.setCardOnClickListener {
             if (cachedLocalIp.isNotEmpty()) {
                 copyToClipboard("Device IP", cachedLocalIp)
-                toast("Copied IP: $cachedLocalIp")
+                toast(getString(R.string.msg_copied_ip, cachedLocalIp))
             }
         }
     }
@@ -357,31 +357,31 @@ class MainActivity : AppCompatActivity() {
             .setTitle(getString(R.string.xposed_title))
             .setMessage(msg)
             .setPositiveButton(android.R.string.ok, null)
-            .setNeutralButton("Refresh") { _: DialogInterface, _: Int -> renderXposedStatus() }
+            .setNeutralButton(getString(R.string.dialog_xposed_refresh)) { _: DialogInterface, _: Int -> renderXposedStatus() }
             .show()
     }
 
     private fun showSetPairingCodeDialog() {
         val input = EditText(this).apply {
-            hint = "6-digit pairing code"
+            hint = getString(R.string.dialog_pairing_hint)
             inputType = InputType.TYPE_CLASS_NUMBER
-            setText("123456")
+            setText(getString(R.string.dialog_pairing_default))
         }
         AlertDialog.Builder(this)
-            .setTitle("Set Pairing Code")
-            .setMessage("Enter a 6-8 digit custom pairing code")
+            .setTitle(getString(R.string.dialog_pairing_title))
+            .setMessage(getString(R.string.dialog_pairing_msg))
             .setView(input)
             .setPositiveButton("Save") { _: DialogInterface, _: Int ->
                 val code = input.text.toString().trim()
                 if (code.length !in 6..8 || !code.all { it.isDigit() }) {
-                    toast("Code must be 6-8 digits")
+                    toast(getString(R.string.err_pairing_length))
                     return@setPositiveButton
                 }
                 AdbHelper.setPairingCode(code)
-                toast("Pairing code saved: $code")
+                toast(getString(R.string.msg_pairing_saved, code))
                 doFullRefresh()
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
@@ -396,6 +396,7 @@ class MainActivity : AppCompatActivity() {
         hasRoot: Boolean,
         error: String? = null
     ) {
+        if (isFinishing || isDestroyed) return
         cachedLocalIp = localIp
         cachedPort = port
 
@@ -557,13 +558,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshWifiList() {
         if (refreshInProgress) {
-            toast("Still loading, please wait...")
+            toast(getString(R.string.msg_still_loading))
             return
         }
         refreshInProgress = true
         bgScope.launch {
             try {
-                withContext(Dispatchers.Main) { btnRefreshWifi.text = "Scanning..." }
+                withContext(Dispatchers.Main) { btnRefreshWifi.text = getString(R.string.msg_scanning) }
                 ShellUtils.probeRootFast()
                 val networks = WifiHelper.getSavedNetworks(this@MainActivity)
                 val items = networks.map { WifiItem(it.ssid, it.bssid, it.security) }
@@ -571,19 +572,10 @@ class MainActivity : AppCompatActivity() {
                     wifiAdapter.update(items)
                     btnRefreshWifi.text = getString(R.string.btn_refresh_wifi)
                     val msg = if (items.isEmpty()) {
-                        buildString {
-                            if (ShellUtils.hasRoot()) {
-                                appendLine("No saved networks found via root.")
-                                appendLine("Try: su -c 'cmd wifi list-networks'")
-                                appendLine("Root available but no output.")
-                            } else {
-                                appendLine("No saved networks found.")
-                                appendLine("No root access.")
-                                appendLine("Grant location permissions and try again.")
-                            }
-                        }
+                        if (ShellUtils.hasRoot()) getString(R.string.msg_no_networks_root)
+                        else getString(R.string.msg_no_networks_noroot)
                     } else {
-                        "Loaded ${items.size} saved networks"
+                        getString(R.string.msg_loaded_networks, items.size)
                     }
                     toast(msg)
                     renderTrustedChips()
@@ -592,7 +584,7 @@ class MainActivity : AppCompatActivity() {
                 Log.w(TAG, "refreshWifiList failed", t)
                 withContext(Dispatchers.Main) {
                     btnRefreshWifi.text = getString(R.string.btn_refresh_wifi)
-                    toast("WiFi refresh failed: " + t.message)
+                    toast(getString(R.string.msg_wifi_refresh_fail, t.message ?: ""))
                 }
             } finally {
                 refreshInProgress = false
@@ -632,9 +624,9 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_LOCATION) {
             if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
-                toast("Permissions granted. Tap Refresh to load WiFi list.")
+                toast(getString(R.string.msg_perm_granted))
             } else {
-                toast("Location/WiFi permission denied. WiFi list may be empty.")
+                toast(getString(R.string.msg_perm_denied))
             }
         }
     }

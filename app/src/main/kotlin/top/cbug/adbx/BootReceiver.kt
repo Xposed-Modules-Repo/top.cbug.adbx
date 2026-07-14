@@ -23,14 +23,17 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
             intent.action != Intent.ACTION_LOCKED_BOOT_COMPLETED) return
 
-        Log.d(TAG, "Boot completed — system_server hook handles ADB logic")
         try {
             Settings.load(context)
         } catch (_: Exception) { }
 
-        // Start foreground service for notification only (no functional logic)
-        try {
-            AdbMonitorService.start(context)
-        } catch (_: Exception) { }
+        // Honour the bootStart toggle — if disabled, do nothing.
+        if (!Settings.bootStart) {
+            Log.d(TAG, "Boot completed — bootStart disabled, skipping")
+            return
+        }
+
+        // ADB management runs in system_server via Xposed hook; no app-side action needed.
+        Log.d(TAG, "Boot completed — system_server hook handles ADB logic")
     }
 }

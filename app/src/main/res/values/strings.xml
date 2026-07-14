@@ -31,21 +31,47 @@
     <string name="section_pairing_code">配对码</string>
     <string name="btn_set_pairing_code">设置配对码</string>
     <string name="btn_enable_adb">开启ADB</string>
-        <string name="btn_disable_adb">关闭ADB</string>
+    <string name="btn_disable_adb">关闭ADB</string>
 
-        <!-- Status indicator labels (color blocks) -->
-        <string name="si_label_adb">Wireless ADB</string>
-        <string name="si_label_pairing">Pairing mode</string>
-        <string name="si_label_port">Port</string>
-        <string name="si_label_wifi">WiFi</string>
-        <string name="si_label_root">Root</string>
-        <string name="si_value_loading">Loading…</string>
-        <string name="si_value_enabled">Enabled</string>
-        <string name="si_value_disabled">Disabled</string>
-        <string name="si_value_available">Available</string>
-        <string name="si_value_unavailable">Unavailable</string>
-        <string name="si_value_wifi_disconnected">Not connected</string>
-        <string name="si_value_pairing_idle">Idle</string>
-        <string name="si_value_pairing_active">Active on port %1$s</string>
-        <string name="si_value_pairing_code">Code: %1$s</string>
-    </resources>
+    <!-- Status indicator labels (color blocks) -->
+    <string name="si_label_adb">Wireless ADB</string>
+    <string name="si_label_pairing">Pairing mode</string>
+    <string name="si_label_port">Port</string>
+    <string name="si_label_wifi">WiFi</string>
+    <string name="si_label_root">Root</string>
+    <string name="si_value_loading">Loading…</string>
+    <string name="si_value_enabled">Enabled</string>
+    <string name="si_value_disabled">Disabled</string>
+    <string name="si_value_available">Available</string>
+    <string name="si_value_unavailable">Unavailable</string>
+    <string name="si_value_wifi_disconnected">Not connected</string>
+    <string name="si_value_pairing_idle">Idle</string>
+    <string name="si_value_pairing_active">Active on port %1$s</string>
+    <string name="si_value_pairing_code">Code: %1$s</string>
+
+    <!-- Toast / error messages -->
+    <string name="err_port_range">Port must be 1024-65535</string>
+    <string name="msg_setting_port">Setting port %1$d...</string>
+    <string name="msg_fixed_port_ok">Fixed port: %1$d</string>
+    <string name="msg_fixed_port_fail">Failed - check ROOT</string>
+    <string name="msg_enabling_adb">Enabling wireless ADB...</string>
+    <string name="msg_disabling_adb">Disabling wireless ADB...</string>
+    <string name="msg_still_loading">Still loading, please wait...</string>
+    <string name="msg_scanning">Scanning...</string>
+    <string name="msg_loaded_networks">Loaded %1$d saved networks</string>
+    <string name="msg_wifi_refresh_fail">WiFi refresh failed: %1$s</string>
+    <string name="msg_perm_granted">Permissions granted. Tap Refresh to load WiFi list.</string>
+    <string name="msg_perm_denied">Location/WiFi permission denied. WiFi list may be empty.</string>
+    <string name="msg_copied">Copied: %1$s</string>
+    <string name="msg_copied_ip">Copied IP: %1$s</string>
+    <string name="msg_init_failed">Init failed: %1$s\n\nCheck logcat (tag: ADB_X_Main)</string>
+    <string name="dialog_pairing_title">Set Pairing Code</string>
+    <string name="dialog_pairing_msg">Enter a 6-8 digit custom pairing code</string>
+    <string name="dialog_pairing_hint">6-digit pairing code</string>
+    <string name="dialog_pairing_default">123456</string>
+    <string name="err_pairing_length">Code must be 6-8 digits</string>
+    <string name="msg_pairing_saved">Pairing code saved: %1$s</string>
+    <string name="dialog_xposed_refresh">Refresh</string>
+    <string name="msg_no_networks_root">No saved networks found via root.\nTry: su -c \'cmd wifi list-networks\'\nRoot available but no output.</string>
+    <string name="msg_no_networks_noroot">No saved networks found.\nNo root access.\nGrant location permissions and try again.</string>
+</resources>

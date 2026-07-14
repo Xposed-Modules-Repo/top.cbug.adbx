@@ -12,6 +12,11 @@ object WifiHelper {
 
     private const val TAG = "ADB_X_WifiHelper"
 
+    // External IP cache — avoid hitting api.ipify.org on every refresh
+    @Volatile private var cachedExternalIp: String = ""
+    @Volatile private var externalIpFetchedMs: Long = 0L
+    private const val EXTERNAL_IP_TTL_MS = 10 * 60 * 1000L  // 10 min
+
     fun getSavedNetworks(context: Context): List<SavedWifi> {
         // 1. Direct XML parsing (most reliable with root)
         if (ShellUtils.hasRoot()) {
@@ -358,14 +363,27 @@ object WifiHelper {
         return ""
     }
 
-    /** Fetch public IP from api.ipify.org (IO-bound, call on background thread). */
+    /** Fetch public IP from api.ipify.org (IO-bound, call on background thread).
+     *  Caches result for 10 minutes to avoid hammering the API on every UI refresh. */
     fun getExternalIpAddress(): String {
+        val now = System.currentTimeMillis()
+        if (cachedExternalIp.isNotEmpty() && (now - externalIpFetchedMs) < EXTERNAL_IP_TTL_MS) {
+            return cachedExternalIp
+        }
         return try {
             val url = java.net.URL("https://api.ipify.org")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = 5000
             conn.readTimeout = 5000
-            conn.inputStream.bufferedReader().readText().trim()
-        } catch (_: Exception) { "" }
+            val ip = conn.inputStream.bufferedReader().readText().trim()
+            if (ip.isNotEmpty()) {
+                cachedExternalIp = ip
+                externalIpFetchedMs = now
+            }
+            ip
+        } catch (_: Exception) {
+            // Keep stale cached value on failure rather than overwriting with empty
+            cachedExternalIp.ifEmpty { "" }
+        }
     }
 }

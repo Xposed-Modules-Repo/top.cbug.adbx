@@ -12,6 +12,8 @@ jobs:
     name: Debug build
     runs-on: ubuntu-latest
     if: "!startsWith(github.ref, 'refs/tags/v')"
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -28,9 +30,9 @@ jobs:
   release:
     name: Release + Full mirror to Xposed repo
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -43,31 +45,31 @@ jobs:
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > adb_x.jks
-            echo "storePassword=${{ secrets.STOREPASSWORD }}" > keystore.properties
-            echo "keyPassword=${{ secrets.KEYPASSWORD }}" >> keystore.properties
-            echo "keyAlias=${{ secrets.KEYALIAS }}" >> keystore.properties
-            echo "storeFile=adb_x.jks" >> keystore.properties
+            printf "storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=adb_x.jks\n" \
+              "${{ secrets.STOREPASSWORD }}" \
+              "${{ secrets.KEYPASSWORD }}" \
+              "${{ secrets.KEYALIAS }}" > keystore.properties
           else
-            keytool -genkey -v -keystore adb_x.jks -alias adb_x -keyalg RSA -keysize 2048 -validity 1 -storepass temp_pass -keypass temp_pass -dname "CN=CI,O=ADB_X,L=Unknown,ST=Unknown,C=CN"
-            echo "storePassword=temp_pass" > keystore.properties
-            echo "keyPassword=temp_pass" >> keystore.properties
-            echo "keyAlias=adb_x" >> keystore.properties
-            echo "storeFile=adb_x.jks" >> keystore.properties
+            keytool -genkey -v -keystore adb_x.jks -alias adb_x -keyalg RSA \
+              -keysize 2048 -validity 1 -storepass temp_pass -keypass temp_pass \
+              -dname "CN=CI, OU=ADB_X, O=ADB_X, L=Unknown, ST=Unknown, C=CN"
+            printf "storePassword=temp_pass\nkeyPassword=temp_pass\nkeyAlias=adb_x\nstoreFile=adb_x.jks\n" > keystore.properties
           fi
 
       - name: Build release APK
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk ADB_X-release.apk
+        run: chmod +x gradlew && ./gradlew assembleRelease
 
       - name: Extract version info
         id: apk
         run: |
-          AAPT=$(ls $ANDROID_SDK_ROOT/build-tools/**/aapt2 2>/dev/null | tail -1 || echo /usr/local/lib/android/sdk/build-tools/36.0.0/aapt2)
+          AAPT=$(ls $ANDROID_SDK_ROOT/build-tools/**/aapt2 | tail -1)
           BADGING=$($AAPT dump badging app/build/outputs/apk/release/app-release.apk | head -1)
           VERCODE=$(echo "$BADGING" | sed -n "s/^package:.*versionCode='\([0-9]*\)'.*/\1/p")
           VERNAME=$(echo "$BADGING" | sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p")
+          # VersionCode must change every release — immutable-release tag
+          # protection blocks reusing a tag. We append the CI run number to
+          # the manifest versionCode so the LSPosed tag stays unique.
+          VERCODE="${VERCODE}${GITHUB_RUN_NUMBER}"
           echo "versionCode=$VERCODE" >> "$GITHUB_OUTPUT"
           echo "versionName=$VERNAME" >> "$GITHUB_OUTPUT"
 
@@ -77,38 +79,34 @@ jobs:
           name: ADB_X v${{ steps.apk.outputs.versionName }}
           body: |
             ## ADB_X v${{ steps.apk.outputs.versionName }}
-            Xposed module — wireless ADB enhancement.
-          files: ADB_X-release.apk
+            Xposed module - wireless ADB enhancement.
+          files: app/build/outputs/apk/release/app-release.apk
           draft: false
           prerelease: false
 
-      # ---- Full source mirror to Xposed-Modules-Repo (requires XPOSED_TOKEN secret) ----
       - name: Mirror full source to Xposed repo
-        if: env.XPOSED_TOKEN != ''
         env:
           VC: ${{ steps.apk.outputs.versionCode }}
           VN: ${{ steps.apk.outputs.versionName }}
-          XPOSED_TOKEN: ${{ secrets.XPOSED_TOKEN }}
         run: |
-          # Clone Xposed repo
           git clone --branch main \
-            https://x-access-token:${XPOSED_TOKEN}@github.com/Xposed-Modules-Repo/top.cbug.adbx.git \
+            https://x-access-token:${{ secrets.XPOSED_TOKEN }}@github.com/Xposed-Modules-Repo/top.cbug.adbx.git \
             xposed_mirror
-
           cd xposed_mirror
-          # Remove everything except .git (preserve git history)
-          find . -path ./.git -prune -o -mindepth 1 -delete
+          # Drop everything except .git so rsync below is a clean mirror.
+          # -not -path './.git' excludes the .git directory itself;
+          # -not -path './.git/*' excludes its contents. Without both,
+          # `find -delete` errors with "cannot delete '.git': Directory
+          # not empty" under `set -e`.
+          find . -mindepth 1 \
+            -not -path './.git' -not -path './.git/*' -delete
           cd ..
-
-          # Copy all source from main repo (exclude build artifacts)
           rsync -a --exclude='.git' --exclude='app/build' --exclude='.gradle' \
             --exclude='.xposed_repo' --exclude='adb_x.jks' --exclude='adb_x.b64.txt' \
             --exclude='keystore.properties' --exclude='local.properties' \
             --exclude='*.db' --exclude='*.bak' --exclude='build_log.txt' \
             --exclude='*.jar' ./ ./xposed_mirror/
-
           cd xposed_mirror
-          # Add module.prop (metadata for modules.lsposed.org)
           cat > module.prop << PROPEOF
           #
           # ADB_X - Xposed module for wireless ADB enhancement
@@ -117,33 +115,68 @@ jobs:
           name=ADB_X
           package=top.cbug.adbx
           author=blockman3063
-          description=无线ADB调试增强模块: 固定端口，配对码，信任WiFi自动开启
+          description=ADB_X - 无线ADB调试增强 Xposed 模块。固定端口、配对码捕获、信任WiFi自动开启无线ADB。
           version=$VN
           versionCode=$VC
           minSdk=30
           maxSdk=36
           PROPEOF
-
-          # Changelog
+          mkdir -p $VC
+          cp ../app/build/outputs/apk/release/app-release.apk $VC/top.cbug.adbx_$VC.apk
           echo "- Release v$VN" >> changelog.txt
 
-      - name: Push mirror + tag to Xposed repo
-        if: env.XPOSED_TOKEN != ''
-        env:
-          VC: ${{ steps.apk.outputs.versionCode }}
-          VN: ${{ steps.apk.outputs.versionName }}
-          XPOSED_TOKEN: ${{ secrets.XPOSED_TOKEN }}
+      - name: Push mirror to Xposed repo
         run: |
           cd xposed_mirror
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit --allow-empty -m "Sync v$VN from blockman3063/ADB_X"
-
-          # Push source
+          git commit --allow-empty -m "Sync v${{ steps.apk.outputs.versionName }} from blockman3063/ADB_X"
           git push origin main
 
-          # Tag the Xposed repo so modules.lsposed.org picks up the release
-          TAG="$VC-$VN"
-          git tag "$TAG" -m "v$VN" -f
-          git push origin "$TAG" -f
+      - name: Create GitHub Release on Xposed repo
+        env:
+          GH_TOKEN: ${{ secrets.XPOSED_TOKEN }}
+          VC: ${{ steps.apk.outputs.versionCode }}
+          VN: ${{ steps.apk.outputs.versionName }}
+        run: |
+          cp xposed_mirror/$VC/top.cbug.adbx_$VC.apk ./adb_x_v$VN.apk
+          # Tag must match LSPosed repo indexer regex /^\d+-.+$/ — leading
+          # digits, then a dash, then anything. versionCode is a pure int;
+          # versionName may contain dots. This avoids the immutable-release
+          # tag-reuse block and keeps modules.lsposed.org indexing the build.
+          TAG_NAME="$VC-$VN"
+
+          # Create as DRAFT first so we can upload asset before lock
+          DRAFT_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/Xposed-Modules-Repo/top.cbug.adbx/releases" \
+            -d "{\"tag_name\":\"$TAG_NAME\",\"name\":\"ADB_X $TAG_NAME\",\"body\":\"ADB_X v$VN - wireless ADB enhancement Xposed module.\n\nSource: https://github.com/blockman3063/ADB_X\",\"draft\":true,\"prerelease\":false}")
+          RELEASE_ID=$(echo "$DRAFT_RESPONSE" | grep -m1 '"id":' | head -1 | sed 's/[^0-9]//g')
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "ERROR: failed to create draft release"
+            echo "$DRAFT_RESPONSE"
+            exit 1
+          fi
+
+          echo "Draft release $TAG_NAME created with id $RELEASE_ID"
+
+          # Upload asset (draft releases are not immutable)
+          UPLOAD_RESULT=$(curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            "https://uploads.github.com/repos/Xposed-Modules-Repo/top.cbug.adbx/releases/$RELEASE_ID/assets?name=adb_x_v$VN.apk" \
+            --data-binary @./adb_x_v$VN.apk)
+          echo "Upload: $UPLOAD_RESULT"
+
+          # Now publish the draft
+          curl -s -X PATCH \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/Xposed-Modules-Repo/top.cbug.adbx/releases/$RELEASE_ID" \
+            -d '{"draft":false}'
+
+          echo "✅ Published release $TAG_NAME with APK adb_x_v$VN.apk"
+

@@ -72,15 +72,15 @@ object Settings {
     /** Sync settings to world-readable file for Xposed module fallback.
      *  Runs on a background thread - do NOT call from main thread. */
     private fun syncConfigToFile() {
+        val content = buildString {
+            appendLine("fixed_port_enabled=" + fixedPortEnabled)
+            appendLine("fixed_port=" + fixedPort)
+            appendLine("auto_enable=" + autoEnable)
+            appendLine("auto_disable=" + autoDisable)
+            appendLine("boot_start=" + bootStart)
+            appendLine("trusted_ssids=" + trustedSsids.joinToString(","))
+        }
         try {
-            val content = buildString {
-                appendLine("fixed_port_enabled=" + fixedPortEnabled)
-                appendLine("fixed_port=" + fixedPort)
-                appendLine("auto_enable=" + autoEnable)
-                appendLine("auto_disable=" + autoDisable)
-                appendLine("boot_start=" + bootStart)
-                appendLine("trusted_ssids=" + trustedSsids.joinToString(","))
-            }
             val file = File(SYNC_CONFIG_FILE)
             try {
                 file.parentFile?.mkdirs()

@@ -149,6 +149,8 @@ object AdbHelper {
     }
 
     private fun writePairingCodeFile(code: String) {
+        // Remove old file first to avoid readPairingCode() picking up a stale value
+        ShellUtils.executeSu("rm -f /data/local/tmp/adb_x_pairing_code", 500)
         ShellUtils.executeSu(
             "echo '" + code + "' > /data/local/tmp/adb_x_pairing_code && chmod 644 /data/local/tmp/adb_x_pairing_code",
             2000)
