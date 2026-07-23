@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ADB_X</string>
+    <string name="xposed_description">无线ADB增强 Xposed 模块:固定端口、配对码捕获、信任WiFi自动开启。</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_status">状态</string>
+    <string name="nav_port">端口</string>
+    <string name="nav_networks">网络</string>
+    <string name="nav_settings">设置</string>
+
+    <!-- Xposed framework status card -->
+    <string name="xposed_title">Xposed 框架</string>
+    <string name="xposed_active_title">模块已激活</string>
+    <string name="xposed_active_subtitle">LSPosed 已在本应用进程中加载模块</string>
+    <string name="xposed_inactive_title">模块未激活</string>
+    <string name="xposed_inactive_subtitle_no_frame">未检测到 Xposed 框架 — 请安装 LSPosed 并启用本模块作用域</string>
+    <string name="xposed_inactive_subtitle_with_frame">已安装框架(%1$s),但模块未在本进程加载。请启用作用域并重启。</string>
+    <string name="xposed_state_active">已激活</string>
+    <string name="xposed_state_inactive">未激活</string>
+    <string name="xposed_state_unknown">未检测</string>
+
+    <!-- Sections / controls -->
+    <string name="section_status">状态</string>
+    <string name="section_fixed_port">固定 ADB 端口</string>
+    <string name="pairing_port_hint">配对端口(自动检测不到时手动输入)</string>
+    <string name="pairing_active_title">配对进行中</string>
+    <string name="pairing_copy_command">复制配对命令</string>
+    <string name="pairing_expires_fmt">%1$d 秒后失效</string>
+    <string name="pairing_expired">配对端口已失效,请重新开启</string>
+    <string name="pairing_open_dev_options">打开开发者选项</string>
+    <string name="pairing_status_idle">未检测到正在进行的配对会话</string>
+    <string name="pairing_status_active_fmt">检测到配对会话 · 端口 %1$s</string>
+    <string name="pairing_hint_open_dev">在开发者选项 → 无线调试 → 使用配对码配对 中打开一个新会话。</string>
+    <string name="pairing_set_hint">设置一个 6-8 位自定义配对码,adbd 会接受这个码作为合法配对输入。</string>
+    <string name="pairing_prefix_cmd_fmt">adb pair %1$s:%2$s %3$s</string>
+    <string name="pairing_summary_no_code">(使用临时 6 位码)</string>
+    <string name="pairing_manual_hint">如果端口看起来不对,请在开发者选项 → 无线调试里查看实际端口。</string>
+    <string name="pairing_hint_idle">点击右侧按钮开始新的配对</string>
+    <string name="btn_start_pairing">开启配对模式</string>
+    <string name="msg_pair_requested">已请求配对,等待端口分配…</string>
+    <string name="section_pairing_code">配对码</string>
+    <string name="section_auto">自动化</string>
+    <string name="section_settings">设置</string>
+    <string name="section_language">语言</string>
+    <string name="section_about">关于</string>
+    <string name="sw_fixed_port">启用固定端口</string>
+    <string name="hint_port">端口 (1024-65535)</string>
+    <string name="hint_port_helper">推荐 5555 — 避免知名端口</string>
+    <string name="btn_apply_port">应用端口</string>
+    <string name="btn_pairing_code">复制配对码</string>
+    <string name="btn_set_pairing_code">设置配对码</string>
+    <string name="btn_enable_adb">开启 ADB</string>
+    <string name="btn_disable_adb">关闭 ADB</string>
+    <string name="sw_auto_enable">连接信任 WiFi 时自动开启</string>
+    <string name="sw_auto_disable">离开时自动关闭</string>
+    <string name="sw_boot_start">开机自启动</string>
+    <string name="wifi_settings_title">Wi-Fi 设置</string>
+    <string name="wifi_search_hint">搜索网络</string>
+    <string name="wifi_no_match">没有匹配的网络</string>
+    <string name="wifi_sort">排序</string>
+    <string name="wifi_sort_alpha">按字母</string>
+    <string name="wifi_sort_signal">按信号</string>
+    <string name="wifi_sort_recent">按最近连接</string>
+    <string name="wifi_manage">管理 Wi-Fi</string>
+    <string name="wifi_summary_fmt">显示 %1$d / 共 %2$d</string>
+    <string name="section_wifi">已保存的 WiFi</string>
+    <string name="btn_refresh_wifi">刷新列表</string>
+    <string name="wifi_empty_hint">暂无保存的网络,点刷新扫描。</string>
+    <string name="wifi_trusted_label">已信任</string>
+    <string name="wifi_count_label">共 %1$d 个网络</string>
+
+    <!-- Status indicator labels -->
+    <string name="si_label_adb">无线 ADB</string>
+    <string name="si_label_pairing">配对模式</string>
+    <string name="si_label_port">端口</string>
+    <string name="si_label_wifi">WiFi</string>
+    <string name="si_label_root">Root</string>
+    <string name="si_value_loading">加载中…</string>
+    <string name="si_value_enabled">已启用</string>
+    <string name="si_value_disabled">已关闭</string>
+    <string name="si_value_available">可用</string>
+    <string name="si_value_unavailable">不可用</string>
+    <string name="si_value_wifi_disconnected">未连接</string>
+    <string name="si_value_pairing_idle">空闲</string>
+    <string name="si_value_pairing_active">在端口 %1$s 上激活</string>
+    <string name="si_value_pairing_code">配对码:%1$s</string>
+
+    <!-- Toast / error messages -->
+    <string name="err_port_range">端口必须在 1024-65535 之间</string>
+    <string name="msg_setting_port">正在设置端口 %1$d...</string>
+    <string name="msg_fixed_port_ok">固定端口:%1$d</string>
+    <string name="msg_fixed_port_fail">失败 — 请检查 ROOT</string>
+    <string name="msg_enabling_adb">正在开启无线 ADB...</string>
+    <string name="msg_disabling_adb">正在关闭无线 ADB...</string>
+    <string name="msg_still_loading">仍在加载,请稍候...</string>
+    <string name="msg_scanning">扫描中...</string>
+    <string name="msg_loaded_networks">已加载 %1$d 个网络</string>
+    <string name="msg_wifi_refresh_fail">WiFi 刷新失败:%1$s</string>
+    <string name="msg_perm_granted">权限已授予。点刷新加载 WiFi 列表。</string>
+    <string name="msg_perm_denied">位置/WiFi 权限被拒,列表可能为空。</string>
+    <string name="msg_copied">已复制:%1$s</string>
+    <string name="msg_copied_ip">复制地址</string>
+    <string name="msg_init_failed">初始化失败:%1$s\n\n查看 logcat(tag: ADB_X_Main)</string>
+    <string name="dialog_pairing_title">设置配对码</string>
+    <string name="dialog_pairing_msg">输入 6-8 位自定义配对码</string>
+    <string name="dialog_pairing_hint">6 位配对码</string>
+    <string name="dialog_pairing_default">123456</string>
+    <string name="err_pairing_length">配对码必须是 6-8 位</string>
+    <string name="msg_pairing_saved">已保存配对码:%1$s</string>
+    <string name="dialog_xposed_refresh">刷新</string>
+    <string name="msg_no_networks_root">未找到已保存的网络。\n请尝试:su -c \'cmd wifi list-networks\'\nRoot 可用但无输出。</string>
+    <string name="msg_no_networks_noroot">未找到已保存的网络。\n无 Root 权限。\n请授予位置权限后重试。</string>
+    <string name="lang_system">跟随系统</string>
+    <string name="lang_english">English</string>
+    <string name="lang_chinese">中文</string>
+    <string name="about_version">版本</string>
+    <string name="about_module_id">模块 ID</string>
+    <string name="about_source_code">源代码</string>
+    <!-- 信任 Wi-Fi 自动开关卡片 -->
+    <string name="section_trusted_wifi">信任 Wi-Fi 自动开关</string>
+    <string name="trusted_wifi_status_armed">自动开关已开启 · 当前 SSID %1$s (%2$s)</string>
+    <string name="trusted_wifi_status_disabled">自动开关已开启但在设置里被关闭</string>
+    <string name="trusted_wifi_status_no_ssids">自动开关已开启 · 还没有标记任何信任网络</string>
+    <string name="trusted_wifi_status_not_armed">自动开关已关闭</string>
+    <string name="trusted_wifi_trusted">信任</string>
+    <string name="trusted_wifi_untrusted">不信任</string>
+    <string name="trusted_wifi_last_trigger">最近触发: %1$s (%2$s)</string>
+    <string name="trusted_wifi_never_triggered">还没有触发过</string>
+    <string name="trusted_wifi_ago_minutes">%1$d 分钟前</string>
+    <string name="trusted_wifi_ago_hours">%1$d 小时前</string>
+    <string name="trusted_wifi_just_now">刚刚</string>
+    <!-- 信任 Wi-Fi 前台服务通知 -->
+    <string name="trusted_wifi_channel_name">信任 Wi-Fi 自动开关</string>
+    <string name="trusted_wifi_channel_desc">自动开关服务运行时显示的常驻通知</string>
+    <string name="trusted_wifi_notif_title">ADB_X 自动开关运行中</string>
+    <string name="trusted_wifi_notif_text">监听当前 Wi-Fi,自动切换无线调试</string>
+    <string name="pairing_trigger_now">立即触发配对对话框</string>
+</resources>

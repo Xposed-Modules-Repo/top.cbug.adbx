@@ -26,3 +26,10 @@ local.properties
 /adb_x.b64.txt
 # Xposed repo staging (local mirror)
 /.xposed_repo
+
+
+# auto-fix: added by nightly cron
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/

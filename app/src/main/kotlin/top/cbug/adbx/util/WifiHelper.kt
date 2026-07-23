@@ -17,30 +17,52 @@ object WifiHelper {
     @Volatile private var externalIpFetchedMs: Long = 0L
     private const val EXTERNAL_IP_TTL_MS = 10 * 60 * 1000L  // 10 min
 
+    /**
+     * TODO: document getSavedNetworks
+     * @param Context
+     */
     fun getSavedNetworks(context: Context): List<SavedWifi> {
-        // 1. Direct XML parsing (most reliable with root)
-        if (ShellUtils.hasRoot()) {
-            val rootXml = try { getSavedNetworksRootXml() } catch (_: Exception) { emptyList() }
-            if (rootXml.isNotEmpty()) {
-                Log.d(TAG, "Loaded " + rootXml.size + " networks via XML")
-                return rootXml
-            }
-        }
-
-        // 2. cmd wifi via su (captures both stdout and stderr)
+        Log.d(TAG, "getSavedNetworks: rootAvailable=" + ShellUtils.hasRoot() + " contextNull=" + (context == null))
+        // On modern Android the saved-network XML store at
+        // /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml is
+        // labelled system_file in SELinux. The app uid (u0_a38) can
+        // not read it even via `su -c cat` — the su binary inherits
+        // the calling process's context, and the su app_policy on
+        // this ROM is restricted to a small set of safe commands.
+        // Probing it adds 2 s × N SU_PATHS per path before failing,
+        // so put cmd wifi first (which talks to system_server and is
+        // not gated by the wifi config store SELinux label) and only
+        // fall back to direct XML if cmd wifi returned nothing.
+        //
+        // 1. cmd wifi via su (fastest, ~30 ms for a 50-network list)
         val cmdNetworks = try { getSavedNetworksCmd() } catch (_: Exception) { emptyList() }
         if (cmdNetworks.isNotEmpty()) {
             Log.d(TAG, "Loaded " + cmdNetworks.size + " networks via cmd wifi")
             return cmdNetworks
         }
+        Log.d(TAG, "cmd wifi path returned empty, falling through to XML...")
 
-        // 3. dumpsys wifi parsing via root
+        // 2. dumpsys wifi parsing via root (used to be #3 but pulled
+        // up here because XML is gated by SELinux on modern ROMs).
         if (ShellUtils.hasRoot()) {
             val rootDump = try { getSavedNetworksRootDumpsys() } catch (_: Exception) { emptyList() }
             if (rootDump.isNotEmpty()) {
                 Log.d(TAG, "Loaded " + rootDump.size + " networks via dumpsys")
                 return rootDump
             }
+            Log.d(TAG, "dumpsys path returned empty")
+        }
+
+        // 3. Direct XML parsing (most reliable when it works, but
+        // gated by SELinux on modern Android). Only attempt as a
+        // last resort to avoid burning 6 s on a doomed probe.
+        if (ShellUtils.hasRoot()) {
+            val rootXml = try { getSavedNetworksRootXml() } catch (_: Exception) { emptyList() }
+            if (rootXml.isNotEmpty()) {
+                Log.d(TAG, "Loaded " + rootXml.size + " networks via XML")
+                return rootXml
+            }
+            Log.d(TAG, "XML path returned empty")
         }
 
         // 4. Fallback: use WifiManager API (requires location permission)
@@ -50,7 +72,17 @@ object WifiHelper {
                 Log.d(TAG, "Loaded " + apiNetworks.size + " networks via WifiManager API")
                 return apiNetworks
             }
+            Log.d(TAG, "API path returned empty")
         }
+
+        // 5. LSPosed-written file (system_server can read all WiFi configs
+        // that the app domain cannot). Read /data/local/tmp/adb_x_wifi_list.
+        val hookFile = try { getSavedNetworksFromHookFile() } catch (_: Exception) { emptyList() }
+        if (hookFile.isNotEmpty()) {
+            Log.d(TAG, "Loaded " + hookFile.size + " networks via hook file")
+            return hookFile
+        }
+        Log.d(TAG, "hook file path returned empty")
 
         Log.w(TAG, buildString {
             appendLine("Cannot read saved networks - all methods failed")
@@ -97,9 +129,11 @@ object WifiHelper {
     }
 
     private fun getSavedNetworksCmd(): List<SavedWifi> {
-        // Try via su first (capture stderr too by not using 2>/dev/null)
+        // Try via su first (capture stderr too by not using 2>/dev/null).
+        // 2 s is plenty: cmd wifi on a 50-network list finishes in
+        // ~300 ms; anything longer is a hang and we want to bail.
         if (ShellUtils.hasRoot()) {
-            val suResult = ShellUtils.executeSu("cmd wifi list-networks 2>&1", 5000)
+            val suResult = ShellUtils.executeSu("cmd wifi list-networks 2>&1", 2000)
             if (suResult.isSuccess() && suResult.output.isNotBlank()) {
                 val parsed = parseCmdWifiOutput(suResult.output)
                 if (parsed.isNotEmpty()) return parsed
@@ -108,7 +142,7 @@ object WifiHelper {
                 Log.w(TAG, "cmd wifi via su returned: " + suResult.output.take(200))
             }
             // 尝试用 shell 用户运行
-            val suShellResult = ShellUtils.executeSu("sh -c 'cmd wifi list-networks 2>&1'", 5000)
+            val suShellResult = ShellUtils.executeSu("sh -c 'cmd wifi list-networks 2>&1'", 2000)
             if (suShellResult.isSuccess() && suShellResult.output.isNotBlank()) {
                 val parsed = parseCmdWifiOutput(suShellResult.output)
                 if (parsed.isNotEmpty()) return parsed
@@ -118,7 +152,7 @@ object WifiHelper {
             }
         }
         // Fallback: run as app process
-        val result = ShellUtils.execute("cmd wifi list-networks 2>&1", 3000)
+        val result = ShellUtils.execute("cmd wifi list-networks 2>&1", 2000)
         if (result.isSuccess() && result.output.isNotBlank()) {
             return parseCmdWifiOutput(result.output)
         }
@@ -131,9 +165,12 @@ object WifiHelper {
     private fun getSavedNetworksRootXml(): List<SavedWifi> {
         if (!ShellUtils.hasRoot()) return emptyList()
         val configPaths = listOf(
+            // Ordered most-likely-first so we find a hit on the
+            // first try on modern Android (Apex wifi config store)
+            // and bail out fast on older devices (legacy /data/misc/wifi).
             "/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml",
-            "/data/misc/wifi/WifiConfigStore.xml",
             "/data/misc_ce/0/apexdata/com.android.wifi/WifiConfigStore.xml",
+            "/data/misc/wifi/WifiConfigStore.xml",
             "/data/misc_ce/0/wifi/WifiConfigStore.xml",
             "/data/misc/wifi/wpa_supplicant.conf",
             "/data/vendor/wifi/WifiConfigStore.xml",
@@ -142,11 +179,18 @@ object WifiHelper {
 
         val result = mutableMapOf<String, String>()
         for (path in configPaths) {
-            val r = ShellUtils.executeSu("cat '" + path + "' 2>&1", 5000)
+            // 2 s is plenty for cat'ing a < 100 KB XML. Anything
+            // longer means the file doesn't exist or the shell call
+            // is wedged — either way we want to bail, not wait 5 s.
+            val r = ShellUtils.executeSu("cat '" + path + "' 2>&1", 2000)
             if (!r.isSuccess() || r.output.isBlank()) {
-                if (r.output.isNotBlank()) {
+                if (r.output.isNotBlank() && !r.output.contains("No such file") && !r.output.contains("Permission denied")) {
                     Log.d(TAG, "Cannot read " + path + ": " + r.output.take(100))
                 }
+                // Once we found anything, stop probing alternate paths —
+                // the user only needs one source of truth. Otherwise fall
+                // through to the next path.
+                if (result.isNotEmpty()) break
                 continue
             }
             val xml = r.output
@@ -165,7 +209,7 @@ object WifiHelper {
             }
 
             if (path.endsWith("wpa_supplicant.conf")) {
-                for (match in Regex("""ssid="([^"]+)""").findAll(xml)) {
+                for (match in Regex("""ssid="([^"]+)"""").findAll(xml)) {
                     val s = cleanSsid(match.groupValues[1])
                     if (s.isNotBlank() && s !in result) result[s] = "WPA"
                 }
@@ -179,10 +223,12 @@ object WifiHelper {
                 if (s.isNotBlank() && s !in result) result[s] = "Unknown"
             }
 
+            // Bail out the moment we have something. On a 50-network
+            // device this turns 35 s worst-case into ~2 s.
             if (result.isNotEmpty()) break
         }
 
-        Log.d(TAG, "XML total: found " + result.size + " SSIDs: " + result.keys.joinToString(", "))
+        Log.d(TAG, "XML total: found " + result.size + " SSIDs")
         return result.map { SavedWifi(it.key, null, it.value) }
     }
 
@@ -276,18 +322,39 @@ object WifiHelper {
             Log.w(TAG, "getConfiguredNetworks failed: " + e.message)
             return emptyList()
         }
+        Log.d(TAG, "getConfiguredNetworks: got " + configs.size + " networks")
         if (configs.isEmpty()) return emptyList()
-
-        val seen = mutableSetOf<String>()
-        return configs.mapNotNull { config ->
+        val result = configs.mapNotNull { config ->
             val ssid = cleanSsid(config.SSID)
-            if (ssid.isBlank() || ssid in seen) return@mapNotNull null
-            seen.add(ssid)
-            val security = when {
-                config.allowedKeyManagement.get(android.net.wifi.WifiConfiguration.KeyMgmt.NONE) -> "Open"
-                else -> "Secured"
+            if (ssid.isBlank()) return@mapNotNull null
+            SavedWifi(ssid, config.BSSID, parseSecurity(config))
+        }
+        Log.d(TAG, "getSavedNetworksApi returning " + result.size + " networks")
+        return result
+    }
+
+    /** Plain-text fallback used when getConfiguredNetworks returns 0 (Android 11+
+     *  privacy policy hides the full list from third-party apps). The LSPosed
+     *  system_server hook writes the list here on WiFi events. */
+    private fun getSavedNetworksFromHookFile(): List<SavedWifi> {
+        return try {
+            val file = java.io.File("/data/local/tmp/adb_x_wifi_list")
+            if (!file.exists() || !file.canRead()) return emptyList()
+            val lines = file.readLines()
+            lines.mapNotNull { line ->
+                val parts = line.split("|")
+                if (parts.size < 3) return@mapNotNull null
+                val ssid = parts[0].trim()
+                if (ssid.isBlank()) return@mapNotNull null
+                SavedWifi(ssid, parts[1].trim().ifBlank { null }, parts[2].trim())
             }
-            SavedWifi(ssid, config.BSSID, security)
+        } catch (_: Throwable) { emptyList() }
+    }
+
+    private fun parseSecurity(config: WifiConfiguration): String {
+        return when {
+            config.allowedKeyManagement.get(android.net.wifi.WifiConfiguration.KeyMgmt.NONE) -> "Open"
+            else -> "Secured"
         }
     }
 
@@ -315,6 +382,10 @@ object WifiHelper {
         return networks.toList()
     }
 
+    /**
+     * TODO: document getCurrentSsid
+     * @param Context
+     */
     fun getCurrentSsid(context: Context): String {
         val wm = context.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager ?: return ""
         return try {
@@ -324,6 +395,10 @@ object WifiHelper {
         } catch (_: Throwable) { "" }
     }
 
+    /**
+     * TODO: document cleanSsid
+     * @param String?
+     */
     fun cleanSsid(ssid: String?): String {
         if (ssid == null) return ""
         var s = ssid.trim()

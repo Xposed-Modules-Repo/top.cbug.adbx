@@ -1,7 +1,20 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Default strings (English). Used when:
+      - System locale is en* (or any non-zh locale)
+      - User explicitly picks "English" in Settings
+      - User picks "Follow system" and system is non-zh
+    values-zh-rCN/ overrides these when locale is zh-CN.
+-->
 <resources>
     <string name="app_name">ADB_X</string>
-    <string name="xposed_description">无线ADB增强模块: 固定端口，配对码，信任WiFi自动开启</string>
+    <string name="xposed_description">Wireless ADB enhancement Xposed module: fixed port, pairing code capture, auto-enable on trusted WiFi.</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_status">Status</string>
+    <string name="nav_port">Port</string>
+    <string name="nav_networks">Networks</string>
+    <string name="nav_settings">Settings</string>
 
     <!-- Xposed framework status card -->
     <string name="xposed_title">Xposed framework</string>
@@ -15,25 +28,56 @@
     <string name="xposed_state_unknown">Not detected</string>
 
     <!-- Sections / controls -->
-    <string name="section_fixed_port">固定ADB端口</string>
-    <string name="sw_fixed_port">启用固定端口</string>
-    <string name="hint_port">端口 (1024-65535)</string>
+    <string name="section_status">Status</string>
+    <string name="section_fixed_port">Fixed ADB port</string>
+    <string name="pairing_port_hint">Pairing port (enter manually if auto-detect fails)</string>
+    <string name="pairing_active_title">Pairing in progress</string>
+    <string name="pairing_copy_command">Copy pair command</string>
+    <string name="pairing_expires_fmt">expires in %1$ds</string>
+    <string name="pairing_expired">Pairing port expired — re-enable to retry</string>
+    <string name="pairing_open_dev_options">Open Developer Options</string>
+    <string name="pairing_status_idle">No active pairing session detected</string>
+    <string name="pairing_status_active_fmt">Pairing session detected · port %1$s</string>
+    <string name="pairing_hint_open_dev">Open a new session in Developer options → Wireless debugging → Pair device with pairing code.</string>
+    <string name="pairing_set_hint">Set a custom 6-8 digit code that adbd will accept as a valid pairing input.</string>
+    <string name="pairing_prefix_cmd_fmt">adb pair %1$s:%2$s %3$s</string>
+    <string name="pairing_summary_no_code">(using ephemeral 6-digit code)</string>
+    <string name="pairing_manual_hint">If the port looks wrong, check Developer options → Wireless debugging for the actual port.</string>
+    <string name="pairing_hint_idle">Tap the right button to start a new pairing</string>
+    <string name="btn_start_pairing">Start pairing</string>
+    <string name="msg_pair_requested">Pairing requested, waiting for port…</string>
+    <string name="section_pairing_code">Pairing code</string>
+    <string name="section_auto">Automation</string>
+    <string name="section_settings">Settings</string>
+    <string name="section_language">Language</string>
+    <string name="section_about">About</string>
+    <string name="sw_fixed_port">Enable fixed port</string>
+    <string name="hint_port">Port (1024-65535)</string>
     <string name="hint_port_helper">Recommended: 5555 — avoid well-known ports</string>
-    <string name="btn_apply_port">应用端口</string>
-    <string name="section_auto">自动化</string>
-    <string name="sw_auto_enable">连接信任WiFi时自动开启</string>
-    <string name="sw_auto_disable">离开信任WiFi时自动关闭</string>
-    <string name="sw_boot_start">开机自启动</string>
-    <string name="section_wifi">WiFi列表 (已保存的)</string>
-    <string name="btn_refresh_wifi">刷新列表</string>
-    <string name="section_status">状态</string>
-    <string name="btn_pairing_code">显示配对码</string>
-    <string name="section_pairing_code">配对码</string>
-    <string name="btn_set_pairing_code">设置配对码</string>
-    <string name="btn_enable_adb">开启ADB</string>
-    <string name="btn_disable_adb">关闭ADB</string>
+    <string name="btn_apply_port">Apply port</string>
+    <string name="btn_pairing_code">Copy pairing code</string>
+    <string name="btn_set_pairing_code">Set pairing code</string>
+    <string name="btn_enable_adb">Enable ADB</string>
+    <string name="btn_disable_adb">Disable ADB</string>
+    <string name="sw_auto_enable">Auto-enable on trusted WiFi</string>
+    <string name="sw_auto_disable">Auto-disable on disconnect</string>
+    <string name="sw_boot_start">Start on boot</string>
+    <string name="wifi_settings_title">Wi-Fi settings</string>
+    <string name="wifi_search_hint">Search networks</string>
+    <string name="wifi_no_match">No matching networks</string>
+    <string name="wifi_sort">Sort</string>
+    <string name="wifi_sort_alpha">Alphabetical</string>
+    <string name="wifi_sort_signal">Signal</string>
+    <string name="wifi_sort_recent">Recent</string>
+    <string name="wifi_manage">Manage Wi-Fi</string>
+    <string name="wifi_summary_fmt">Showing %1$d of %2$d</string>
+    <string name="section_wifi">Saved WiFi networks</string>
+    <string name="btn_refresh_wifi">Refresh list</string>
+    <string name="wifi_empty_hint">No saved networks yet. Tap refresh to scan.</string>
+    <string name="wifi_trusted_label">Trusted</string>
+    <string name="wifi_count_label">%1$d networks</string>
 
-    <!-- Status indicator labels (color blocks) -->
+    <!-- Status indicator labels -->
     <string name="si_label_adb">Wireless ADB</string>
     <string name="si_label_pairing">Pairing mode</string>
     <string name="si_label_port">Port</string>
@@ -63,7 +107,7 @@
     <string name="msg_perm_granted">Permissions granted. Tap Refresh to load WiFi list.</string>
     <string name="msg_perm_denied">Location/WiFi permission denied. WiFi list may be empty.</string>
     <string name="msg_copied">Copied: %1$s</string>
-    <string name="msg_copied_ip">Copied IP: %1$s</string>
+    <string name="msg_copied_ip">Copy address</string>
     <string name="msg_init_failed">Init failed: %1$s\n\nCheck logcat (tag: ADB_X_Main)</string>
     <string name="dialog_pairing_title">Set Pairing Code</string>
     <string name="dialog_pairing_msg">Enter a 6-8 digit custom pairing code</string>
@@ -74,4 +118,29 @@
     <string name="dialog_xposed_refresh">Refresh</string>
     <string name="msg_no_networks_root">No saved networks found via root.\nTry: su -c \'cmd wifi list-networks\'\nRoot available but no output.</string>
     <string name="msg_no_networks_noroot">No saved networks found.\nNo root access.\nGrant location permissions and try again.</string>
+    <string name="lang_system">Follow system</string>
+    <string name="lang_english">English</string>
+    <string name="lang_chinese">中文</string>
+    <string name="about_version">Version</string>
+    <string name="about_module_id">Module ID</string>
+    <string name="about_source_code">Source code</string>
+    <!-- Trusted Wi-Fi auto-toggle card -->
+    <string name="section_trusted_wifi">Trusted Wi-Fi</string>
+    <string name="trusted_wifi_status_armed">Auto-toggle armed · current SSID %1$s is %2$s</string>
+    <string name="trusted_wifi_status_disabled">Auto-toggle armed but disabled in Settings</string>
+    <string name="trusted_wifi_status_no_ssids">Auto-toggle armed · no trusted networks yet</string>
+    <string name="trusted_wifi_status_not_armed">Auto-toggle off</string>
+    <string name="trusted_wifi_trusted">trusted</string>
+    <string name="trusted_wifi_untrusted">not trusted</string>
+    <string name="trusted_wifi_last_trigger">Last action: %1$s (%2$s)</string>
+    <string name="trusted_wifi_never_triggered">No actions recorded yet</string>
+    <string name="trusted_wifi_ago_minutes">%1$d min ago</string>
+    <string name="trusted_wifi_ago_hours">%1$d h ago</string>
+    <string name="trusted_wifi_just_now">just now</string>
+    <!-- Trusted-WiFi foreground service notification -->
+    <string name="trusted_wifi_channel_name">Trusted Wi-Fi auto-toggle</string>
+    <string name="trusted_wifi_channel_desc">Persistent notification shown while the auto-toggle service is running</string>
+    <string name="trusted_wifi_notif_title">ADB_X auto-toggle running</string>
+    <string name="trusted_wifi_notif_text">Watching the connected Wi-Fi to toggle wireless ADB</string>
+    <string name="pairing_trigger_now">Trigger pairing dialog</string>
 </resources>

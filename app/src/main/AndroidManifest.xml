@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <application
         android:name=".App"
@@ -31,12 +33,48 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".PairingActivity"
+            android:exported="false"
+            android:label="@string/section_pairing_code"
+            android:parentActivityName=".MainActivity"
+            android:configChanges="orientation|screenSize" />
+
+        <activity
+            android:name=".ui.WifiSettingsActivity"
+            android:exported="false"
+            android:label="@string/wifi_settings_title"
+            android:parentActivityName=".MainActivity"
+            android:configChanges="orientation|screenSize" />
+
+       <receiver
+           android:name=".PairingReceiver"
+           android:exported="false">
+           <intent-filter>
+               <action android:name="android.debug.WIRELESS_DEBUG_ENABLE_DISCOVER_ACTION" />
+           </intent-filter>
+       </receiver>
+
        <receiver
            android:name=".BootReceiver"
            android:exported="true">
            <intent-filter>
                <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+           </intent-filter>
+       </receiver>
+
+       <!-- Triggered by the system on every Wi-Fi state change. Uses
+            goAsync() for up to 10 s of background execution — no
+            foreground service required. The companion action
+            WIFI_EVAL lets MainActivity invoke the same evaluate()
+            path on resume so the cold-start case is handled. -->
+       <receiver
+           android:name=".WifiStateReceiver"
+           android:exported="true">
+           <intent-filter>
+               <action android:name="android.net.wifi.NETWORK_STATE_CHANGED" />
+               <action android:name="top.cbug.adbx.action.WIFI_EVAL" />
            </intent-filter>
        </receiver>
 

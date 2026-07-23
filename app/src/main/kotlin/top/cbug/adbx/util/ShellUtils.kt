@@ -26,16 +26,39 @@ object ShellUtils {
         if (rootChecked && (now - lastRootCheckMs) < ROOT_CACHE_TTL_MS) {
             return rootAvailable
         }
+        // Some ROMs (Magisk with DenyList, hardened SELinux) hide su
+        // binaries from third-party apps via File.exists(). Try executing
+        // su directly instead — if it returns 0 with output we have root.
         for (suPath in SU_PATHS) {
             try {
-                if (File(suPath[0]).exists()) {
+                // suPath is ["/system/bin/su", "-c"]; concat with the
+                // actual command and spread into ProcessBuilder varargs
+                // so it gets [/system/bin/su, -c, echo ADB_X_ROOT_OK].
+                // Without the spread, Kotlin's List+String returns a
+                // 3-element List that ProcessBuilder then unpacks
+                // without the -c flag, which makes su start a daemon
+                // shell that never finishes our probe.
+                val cmd = suPath + "echo ADB_X_ROOT_OK"
+                val proc = ProcessBuilder(*cmd.toTypedArray())
+                    .redirectErrorStream(true)
+                    .start()
+                val finished = proc.waitFor(PROBE_TIMEOUT_MS * 30, TimeUnit.MILLISECONDS)
+                if (!finished) {
+                    proc.destroyForcibly()
+                    continue
+                }
+                val out = proc.inputStream.bufferedReader().readText().trim()
+                if (proc.exitValue() == 0 && out.contains("ADB_X_ROOT_OK")) {
                     workingSuPath = suPath
                     rootChecked = true
                     rootAvailable = true
                     lastRootCheckMs = now
+                    android.util.Log.d(TAG, "probeRootFast: " + suPath[0] + " works")
                     return true
                 }
-            } catch (_: Exception) { }
+            } catch (t: Exception) {
+                android.util.Log.d(TAG, "probeRootFast: " + suPath[0] + " error: " + t.message)
+            }
         }
         // Fallback: which su
         return runCatching {
@@ -58,6 +81,11 @@ object ShellUtils {
         }.getOrDefault(false)
     }
 
+    /**
+     * TODO: document execute
+     * @param String
+     * @param 2000
+     */
     fun execute(command: String, timeoutMs: Long = 2000): Result {
         return try {
             val proc = ProcessBuilder("/system/bin/sh", "-c", command)
@@ -66,11 +94,14 @@ object ShellUtils {
             val finished = proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
             if (!finished) {
                 proc.destroyForcibly()
+                android.util.Log.d(TAG, "execute timeout: " + command.take(60))
                 return Result(-2, "timeout")
             }
             val out = proc.inputStream.bufferedReader().readText()
+            android.util.Log.d(TAG, "execute cmd='" + command.take(60) + "' rc=" + proc.exitValue() + " outLen=" + out.length)
             Result(proc.exitValue(), out)
         } catch (e: Exception) {
+            android.util.Log.d(TAG, "execute error: " + command.take(60) + " msg=" + e.message)
             Result(-1, e.message ?: "")
         }
     }
@@ -82,7 +113,8 @@ object ShellUtils {
             val cached = workingSuPath
             if (cached != null) {
                 try {
-                    val proc = ProcessBuilder(cached + command)
+                    val cmd = cached + command
+                    val proc = ProcessBuilder(*cmd.toTypedArray())
                         .redirectErrorStream(true)
                         .start()
                     val finished = proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
@@ -95,7 +127,8 @@ object ShellUtils {
             }
             for (suPath in SU_PATHS) {
                 try {
-                    val proc = ProcessBuilder(suPath + command)
+                    val cmd = suPath + command
+                    val proc = ProcessBuilder(*cmd.toTypedArray())
                         .redirectErrorStream(true)
                         .start()
                     val finished = proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
@@ -114,6 +147,47 @@ object ShellUtils {
         }
     }
 
+    /**
+     * Run a shell command via su, piping the given content to stdin.
+     * Used when the caller wants to send a multi-line script with
+     * heredocs, quotes, and dollar-signs that would otherwise be
+     * eaten by the outer sh -c '...' wrapper.
+     *
+     * We use `sh -s "$@"` so the script is read from stdin, with all
+     * its inner $ characters passed through verbatim. su 0 passes the
+     * stdin through unchanged, so the heredoc body arrives intact.
+     */
+    fun executeSuWithStdin(content: String, timeoutMs: Long = 10000L): Result {
+        return try {
+            val cached = workingSuPath
+            val candidates = if (cached != null) listOf(cached) + SU_PATHS else SU_PATHS
+            for (suPath in candidates) {
+                try {
+                    val pb = ProcessBuilder(*suPath.toTypedArray(), "sh", "-s")
+                        .redirectErrorStream(true)
+                    val proc = pb.start()
+                    proc.outputStream.bufferedWriter().use { it.write(content); it.flush() }
+                    proc.outputStream.close()
+                    val finished = proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+                    if (!finished) { proc.destroyForcibly(); continue }
+                    val out = proc.inputStream.bufferedReader().readText()
+                    val result = Result(proc.exitValue(), out)
+                    if (result.isSuccess() || out.isNotBlank()) {
+                        workingSuPath = suPath
+                    }
+                    return result
+                } catch (_: Exception) { }
+            }
+            Result(-1, "su not found")
+        } catch (e: Exception) {
+            Result(-1, e.message ?: "")
+        }
+    }
+
+    /**
+     * TODO: document probeRoot
+     * @param false
+     */
     fun probeRoot(forceRefresh: Boolean = false): Boolean {
         val now = System.currentTimeMillis()
         if (!forceRefresh && rootChecked && (now - lastRootCheckMs) < ROOT_CACHE_TTL_MS) {
@@ -153,6 +227,10 @@ object ShellUtils {
         return false
     }
 
+    /**
+     * TODO: document hasRoot
+     * @param false
+     */
     fun hasRoot(forceRefresh: Boolean = false): Boolean {
         val now = System.currentTimeMillis()
         if (!forceRefresh && rootChecked && (now - lastRootCheckMs) < ROOT_CACHE_TTL_MS) {

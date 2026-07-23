@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <!-- Ethernet / port — used for fixed ADB port -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M22,5l-5,5l-3,-3l-9,9l3,3l9,-9l3,3l5,-5z"/>
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M2.81,14.12L5.64,11.29l1.41,1.41L4.22,15.54zM9.24,7.71l1.41,-1.41l2.83,2.83l-1.41,1.41z"/>
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M7.05,15.54L4.22,12.71l1.41,-1.41l2.83,2.83z"/>
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M14.54,11.71l1.41,-1.41l2.83,2.83l-1.41,1.41z"/>
+</vector>
