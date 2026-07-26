@@ -8,4 +8,4 @@
 - Connection watchdog
 - Internal & external IP display
 - Tap to copy IP:port
-- Release v1.1.0-beta1
+- Release v1.1.0

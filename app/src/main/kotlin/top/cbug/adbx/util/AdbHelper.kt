@@ -1,6 +1,7 @@
 package top.cbug.adbx.util
 
 import android.content.Context
+import android.content.Intent
 import android.provider.Settings
 import android.util.Log
 import java.io.File
@@ -437,16 +438,39 @@ object AdbHelper {
      * AdbDebuggingManager state from outside system_server, and on
      * this ROM the hook is not injected into system_server).
      */
-    fun triggerPairing(): Boolean {
-        // AOSP IAdbManager AIDL: enablePairingByPairingCode is at
-        // transaction code 8 (FIRST_CALL_TRANSACTION + 7). The 0-indexed
-        // methods (allowDebugging, denyDebugging, ...) are followed by
-        // enablePairingByPairingCode, which sends the intent
-        // WIRELESS_DEBUG_ENABLE_DISCOVER_ACTION and spawns the
-        // pairing port.
+    fun triggerPairing(context: Context? = null): Boolean {
+        val ctx = context ?: top.cbug.adbx.App.appContext
+        // First try: shell `service call adb 8`. This works when the
+        // caller has adb-service permission (shell uid) but can fail
+        // for app uid even via su, because the servicemanager binder
+        // gates IAdbManager by SELinux context, not by effective uid.
+        // We still try because in some setups (debug shell uid,
+        // zero-config KSU) it works.
         Log.d(TAG, "triggerPairing: service call adb 8")
-        val r = ShellUtils.executeSu("service call adb 8", 3000)
-        return r.isSuccess()
+        val suAttempt = ShellUtils.executeSu("service call adb 8", 3000)
+        if (suAttempt.isSuccess()) return true
+        // Second try: open the Developer Options wireless-debug screen
+        // directly via Settings Intent. The user then taps "Pair device"
+        // themselves, which goes through the system-level IAdbManager
+        // and shows the dialog. We don't need any special permission to
+        // start an Activity from our own context.
+        if (ctx != null) {
+            try {
+                val devIntent = Intent(
+                    Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
+                ).addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP
+                )
+                ctx.startActivity(devIntent)
+                Log.d(TAG, "triggerPairing: opened Developer Options via Settings Intent")
+                return true
+            } catch (t: Throwable) {
+                Log.w(TAG, "triggerPairing: Settings Intent fallback failed: " + t.message)
+            }
+        }
+        Log.w(TAG, "triggerPairing: all attempts failed")
+        return false
     }
 
 
@@ -517,6 +541,87 @@ object AdbHelper {
             Log.w(TAG, "installAsKernelSuModule failed", t)
             false
         }
+    }
+
+    // ---------------- USB / wired ADB ----------------
+    //
+    // Wired ADB lives on a different setting from wireless: they don't
+    // interact on this device (wireless is over wlan0, USB is over the
+    // gadget/composite driver). We expose distinct toggles so a user
+    // can keep "auto-arm on trusted USB" on while leaving wireless off,
+    // and so a single toggle can't disable both at once.
+
+    /**
+     * Enable ADB over USB by setting persist.sys.usb.config to include
+     * "mtp,adb" (the modern Android default) and rebooting the USB
+     * gadget driver. A reboot of the device is NOT required — the
+     * persist properties take effect on the next USB function switch
+     * which `service call usb` triggers, but on most OnePlus/opus ROMs
+     * the kernel gadget is hot-pluggable via this command sequence.
+     */
+    fun enableUsbAdb(): Boolean {
+        Log.d(TAG, "enableUsbAdb")
+        // Mirror the existing USB function. We append ",adb" to whatever
+        // is already in persist.sys.usb.config so we don't strip MTP / PTP
+        // modes the user has set in Developer options.
+        val current = ShellUtils.executeSu("getprop persist.sys.usb.config", 1000).output.trim()
+        if (current.contains(",adb")) {
+            Log.d(TAG, "enableUsbAdb: persist.sys.usb.config already includes adb")
+        } else {
+            val target = if (current.isBlank()) "mtp,adb" else "$current,adb"
+            val r = ShellUtils.executeSu(
+                "setprop persist.sys.usb.config '$target' && setprop sys.usb.config '$target'", 1500
+            )
+            if (!r.isSuccess()) {
+                Log.w(TAG, "enableUsbAdb: setprop failed: " + r.output.take(200))
+                return false
+            }
+        }
+        // Re-bind the gadget so the new function takes effect. On Q+
+        // this re-enumerates the USB device and the host picks up the
+        // new function set without a full reboot.
+        val r2 = ShellUtils.executeSu(
+            "service call usb 8 i32 0 s16 'adb' i32 1 i32 0 i32 0", 2000
+        )
+        if (!r2.isSuccess()) {
+            Log.w(TAG, "enableUsbAdb: service call usb failed: " + r2.output.take(200))
+            return false
+        }
+        // Persist our local marker so the Status tab can show a
+        // accurate state — the persist.sys.usb.config is the source
+        // of truth, but reading it requires root every refresh.
+        top.cbug.adbx.store.Settings.usbAdbEnabled = true
+        return true
+    }
+
+    /** Strip the ,adb suffix from persist.sys.usb.config and re-bind
+     *  the USB gadget. MTP / PTP / charging are preserved. */
+    fun disableUsbAdb(): Boolean {
+        Log.d(TAG, "disableUsbAdb")
+        val current = ShellUtils.executeSu("getprop persist.sys.usb.config", 1000).output.trim()
+        if (current.contains(",adb")) {
+            val target = current.replace(",adb", "").replace("adb,", "").replace(",,", ",").trim(',')
+            ShellUtils.executeSu(
+                "setprop persist.sys.usb.config '$target' && setprop sys.usb.config '$target'", 1500
+            )
+        }
+        ShellUtils.executeSu(
+            "service call usb 8 i32 0 s16 'mtp' i32 1 i32 0 i32 0", 2000
+        )
+        top.cbug.adbx.store.Settings.usbAdbEnabled = false
+        return true
+    }
+
+    /**
+     * Whether ADB-over-USB is currently enabled. Uses getprop first
+     * (root path), then falls back to the Settings marker the app
+     * tracks locally. Either signal is enough — the user wants to
+     * know "is ADB on for this USB cable right now".
+     */
+    fun isUsbAdbEnabled(): Boolean {
+        val r = ShellUtils.executeSu("getprop persist.sys.usb.config", 1000)
+        if (r.isSuccess() && r.output.contains(",adb")) return true
+        return top.cbug.adbx.store.Settings.usbAdbEnabled
     }
 
 

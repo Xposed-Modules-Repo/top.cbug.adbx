@@ -40,8 +40,8 @@ import top.cbug.adbx.store.Settings as AppSettings
 import top.cbug.adbx.ui.NetworkFragment
 import top.cbug.adbx.ui.SettingsFragment
 import top.cbug.adbx.ui.StatusFragment
+import top.cbug.adbx.ui.WiredFragment
 import top.cbug.adbx.ui.WifiAdapter
-import top.cbug.adbx.ui.WifiItem
 import top.cbug.adbx.ui.WifiSettingsActivity
 import top.cbug.adbx.util.AdbHelper
 import top.cbug.adbx.util.LocaleHelper
@@ -59,6 +59,11 @@ import top.cbug.adbx.util.XposedStatus
  * (cached IP, port, latest status snapshot) lives here.
  */
 class MainActivity : AppCompatActivity() {
+
+    /** Last SSID we observed in [doMinimalRefresh]. The Status tab's
+     *  trust-toggle button reads this so it doesn't have to query the
+     *  WifiManager itself (which can take 50-200 ms on a cold start). */
+    @Volatile var currentSsid: String = ""
 
     companion object {
         private const val TAG = "ADB_X_Main"
@@ -138,8 +143,8 @@ class MainActivity : AppCompatActivity() {
             bottomNav.setOnItemSelectedListener { item ->
                 switchTo(when (item.itemId) {
                     R.id.tab_status   -> StatusFragment()
-                    R.id.tab_networks -> NetworkFragment()
-                    R.id.tab_networks -> NetworkFragment()
+                    R.id.tab_wireless -> NetworkFragment()
+                    R.id.tab_wired    -> WiredFragment()
                     R.id.tab_settings -> SettingsFragment()
                     else               -> StatusFragment()
                 })
@@ -281,6 +286,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 val st = AdbHelper.getFullStatus(this@MainActivity)
                 val ssid = try { WifiHelper.getCurrentSsid(this@MainActivity) } catch (_: Exception) { "" }
+                currentSsid = ssid
                 val ip = try { WifiHelper.getLocalIpAddress(this@MainActivity) } catch (_: Exception) { "" }
                 val extIp = try { WifiHelper.getExternalIpAddress() } catch (_: Exception) { "" }
                 val xposed = XposedStatus.probe(this@MainActivity)
@@ -538,10 +544,11 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- Minimal refresh on first launch ----------------
 
-    private fun doMinimalRefresh() {
+    internal fun doMinimalRefresh() {
         bgScope.launch {
             try {
                 val ssid = try { WifiHelper.getCurrentSsid(this@MainActivity) } catch (_: Exception) { "" }
+                currentSsid = ssid
                 val portNonRoot = AdbHelper.getCurrentPortNonRoot()
                 val adbEnabled = portNonRoot.isNotEmpty()
                 val pairingPort = try { AdbHelper.getPairingPort() } catch (_: Exception) { "" }

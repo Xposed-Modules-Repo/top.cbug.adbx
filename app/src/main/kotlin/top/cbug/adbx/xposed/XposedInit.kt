@@ -44,9 +44,44 @@ class XposedInit : IXposedHookLoadPackage {
             } catch (_: Throwable) { }
             XposedStatus.markActive()
         }
-        when (lpparam.packageName) {
-            "android" -> AdbSystemHooks.hook(lpparam)
-            "com.android.settings" -> SettingsHooks.hook(lpparam)
+        // System_server hook on stock AOSP — runs in the system_server
+        // runtime where ConnectivityManager / WifiManager / Settings.Global
+        // are bound. Some OEMs (OnePlus in particular) only inject
+        // LSPosed modules into com.android.settings and never into
+        // system_server, so we also call into AdbSystemHooks when the
+        // process is the Settings app — it carries the same
+        // ConnectivityService / WifiManager singletons as system_server
+        // because they live in the OS framework, not the app process.
+        // We log every entry path so on-device debugging can confirm
+        // which one ran.
+        val procName = lpparam.processName
+        when {
+            procName == "system_server" || procName.endsWith(":system_server") -> {
+                XposedBridge.log("[$TAG] handleLoadPackage: procName='$procName' package='${lpparam.packageName}' → system_server hook")
+                AdbSystemHooks.hook(lpparam)
+            }
+            // com.android.settings is the practical fallback on OnePlus.
+            // The Settings app keeps the framework singletons, so the
+            // hook still gets the real NetworkCallback dispatcher and the
+            // real Settings.Global resolver — we are not running in a
+            // sandbox.
+            lpparam.packageName == "com.android.settings" -> {
+                XposedBridge.log("[$TAG] handleLoadPackage: procName='$procName' package='${lpparam.packageName}' → settings-side system hook")
+                SettingsHooks.hook(lpparam)
+                AdbSystemHooks.hookSettings(lpparam)
+            }
+            // Stripped LSPosed scope: sometimes the framework injects the
+            // module into the bare "android" package (uid 1000 framework
+            // process — usually zygote-derived and same runtime as
+            // system_server). Try once, otherwise stay silent so we
+            // don't double-register when system_server also gets a
+            // handleLoadPackage call.
+            lpparam.packageName == "android" && procName != "system_server" -> {
+                XposedBridge.log("[$TAG] handleLoadPackage: android proc='$procName' (system_server handled separately)")
+            }
+            else -> {
+                XposedBridge.log("[$TAG] handleLoadPackage: procName='$procName' package='${lpparam.packageName}' — no hook")
+            }
         }
     }
 }

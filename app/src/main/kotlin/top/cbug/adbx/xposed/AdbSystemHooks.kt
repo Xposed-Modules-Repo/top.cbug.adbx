@@ -19,13 +19,14 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * System_server hooks — all ADB management logic lives here.
  *
- * App (UI only): writes config to /data/local/tmp/adb_x_config.txt
+ * App (UI only): writes config to /data/system/adb_x_config.txt
  * Hook: reads config on WiFi events + retry when file appears late.
  */
 object AdbSystemHooks {
 
     private const val TAG = "ADB_X_SystemHooks"
-    private const val CONFIG_PATH = "/data/local/tmp/adb_x_config.txt"
+    private const val CONFIG_PATH = "/data/system/adb_x_config.txt"
+    private const val SYNC_CONFIG_FILE = "/data/system/adb_x_config.txt"
     private val registered = AtomicBoolean(false)
 
     /** SSID we already enabled ADB for — avoid re-enabling on every event. */
@@ -182,15 +183,17 @@ object AdbSystemHooks {
                     handleWifiEvent(cm, wm, network, context, handler)
                 }
                 override fun onLost(network: Network) {
+                    // WiFi loss: do nothing on the ADB side. Android's
+                    // own adbd keeps the wireless endpoint alive across
+                    // SSID transitions and the user can keep their
+                    // session. Forgetting to call disable here also
+                    // avoids a race where we disable ADB while the user
+                    // is about to reconnect to a different trusted SSID.
                     val caps = cm.getNetworkCapabilities(network)
                     if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
                     lastEnabledSsid = ""
                     retryCount.set(0)
-                    val config = readConfig()
-                    if (config.autoDisable) {
-                        XposedInit.log("[$TAG] WiFi lost — disabling ADB")
-                        disableAdb(context)
-                    }
+                    XposedInit.log("[$TAG] WiFi lost — leaving ADB state as-is (Android-managed)")
                 }
                 override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                     if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
@@ -205,25 +208,73 @@ object AdbSystemHooks {
             // third-party apps via WifiManager.configuredNetworks, but
             // system_server has full visibility. We piggyback on the
             // existing WifiManager injection point.
+            //
+            // On OnePlus OxygenOS 16+ the WifiManager binder service
+            // intentionally returns an empty list from
+            // getConfiguredNetworks() (see "WifiConfigManager -
+            // Configured networks Begin ---- ... End ----" in dumpsys
+            // wifi), while cmd wifi / dumpsys wifi / the
+            // WifiConfigStore.xml file all still contain the saved
+            // networks. /data/misc/apexdata/com.android.wifi/ is
+            // labeled apex_data_file and the system_app uid we run
+            // in via this hook can't read it. cmd service is
+            // shell-uid-only. The only remaining source on a OnePlus
+            // 16 + KernelSU build where LSPosed only hooks settings
+            // (not system_server) is `dumpsys wifi`, which the system
+            // wifi service will answer; it's slow (~10 s of poll
+            // history on this build) but we run it once per
+            // NetworkCallback onChanged() and cache to Settings.Global,
+            // so the slow boot only blocks the very first refresh
+            // after a WiFi state change.
             try {
-                val wifiClass = XposedHelpers.findClass("android.net.wifi.WifiManager", null)
-                val getNetworksMethod = wifiClass.getDeclaredMethod("getConfiguredNetworks")
-                val wmInstance = context.getSystemService(Context.WIFI_SERVICE)
-                val networks = getNetworksMethod.invoke(wmInstance) as? List<*> ?: emptyList<Any>()
-                val sb = StringBuilder()
-                for (net in networks) {
-                    if (net == null) continue
-                    val cls = net.javaClass
-                    val ssid = try { (XposedHelpers.callMethod(net, "getSSID") ?: "").toString() } catch (_: Throwable) { "" }
-                    val bssid = try { (XposedHelpers.callMethod(net, "getBSSID") ?: "").toString() } catch (_: Throwable) { "" }
-                    sb.append(ssid.replace("\"", "")).append('|')
-                      .append(bssid.replace("\"", "")).append('|')
-                      .append("Secured").append('\n')
+                val dump = StringBuilder()
+                // Stream dumpsys wifi into a temp file so a hung
+                // dumpsys output stream doesn't deadlock us into
+                // the waitFor timeout. We redirect stdout into the
+                // pipe and parse line-by-line on the reader side;
+                // if the call hangs the timeout fires and we destroy
+                // the process, which closes the pipe and unblocks
+                // the reader.
+                try {
+                    XposedInit.log("[$TAG] dumping via dumpsys wifi (60s ceiling)")
+                    val proc = ProcessBuilder("/system/bin/dumpsys", "wifi")
+                        .redirectErrorStream(true)
+                        .start()
+                    // Stream the output on a background thread so
+                    // the child's stdout pipe doesn't deadlock
+                    // waitFor() at ~64 kB of buffered output. We
+                    // cancel the read after 60 s by joining the
+                    // reader thread with the same deadline.
+                    val seen = HashSet<String>()
+                    val idSsidRegex = Regex("""ID:\s*\d+\s+SSID:\s*"?([^"\n]+?)"?\s+PROVIDER""")
+                    val readerThread = Thread {
+                        try {
+                            proc.inputStream.bufferedReader().useLines { lines ->
+                                for (line in lines) {
+                                    val m = idSsidRegex.find(line) ?: continue
+                                    val ssid = m.groupValues[1].trim()
+                                    if (ssid.isNotBlank() && ssid != "<unknown ssid>") seen.add(ssid)
+                                }
+                            }
+                        } catch (_: Throwable) { }
+                    }
+                    readerThread.isDaemon = true
+                    readerThread.start()
+                    val finished = proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+                    if (!finished) {
+                        proc.destroyForcibly()
+                    }
+                    readerThread.join(2000)
+                    XposedInit.log("[$TAG] dumpsys wifi finished=" + finished + " regex parsed " + seen.size + " SSIDs")
+                    for (s in seen) {
+                        dump.append(s).append('|')
+                            .append("|Secured\n")
+                    }
+                } catch (t: Throwable) {
+                    XposedInit.log("[$TAG] dumpsys wifi failed: ${t.message}")
                 }
-                val tmp = java.io.File("/data/local/tmp/adb_x_wifi_list")
-                tmp.writeText(sb.toString())
-                java.io.File("/data/local/tmp/adb_x_wifi_list").setReadable(true, false)
-                XposedInit.log("[$TAG] dumped " + networks.size + " WiFi networks")
+                val source = if (dump.isNotEmpty()) "dumpsys-wifi" else "empty"
+                persistDump(context, dump, source)
             } catch (t: Throwable) {
                 XposedInit.log("[$TAG] WiFi dump failed: ${t.message}")
             }
@@ -405,14 +456,17 @@ object AdbSystemHooks {
 
     private fun writePairingPort(port: String) {
         try {
-            val ctx = XposedHelpers.callMethod(
-                XposedHelpers.callStaticMethod(
-                    XposedHelpers.findClass("android.app.ActivityThread", null),
-                    "currentActivityThread"
-                ),
-                "getSystemContext"
-            ) as Context
-            Runtime.getRuntime().exec(arrayOf("su", "-c", "sh -c 'echo $port > /data/local/tmp/adb_x_pairing_port && chmod 666 /data/local/tmp/adb_x_pairing_port'"))
+            // Write directly from the hooked process context. The
+            // com.android.settings process runs as system_app (uid
+            // 1000) and can write /data/local/tmp/ (shell_data_file
+            // label, app-readable) without needing su — and without
+            // risking single-quote / shell-metacharacter escaping
+            // problems that broke the previous Runtime.exec("su -c
+            // sh -c '...'") approach.
+            val f = java.io.File("/data/local/tmp/adb_x_pairing_port")
+            f.parentFile?.mkdirs()
+            f.writeText(port)
+            try { f.setReadable(true, false) } catch (_: Throwable) { }
             XposedInit.log("[$TAG] pairing port written: $port")
         } catch (t: Throwable) {
             XposedInit.log("[$TAG] writePairingPort failed: ${t.message}")
@@ -459,15 +513,19 @@ object AdbSystemHooks {
         handler.postDelayed({
             val ssid = try { wm.connectionInfo?.ssid?.trim()?.removeSurrounding("\"") ?: "" }
                         catch (_: Exception) { "" }
-            if (ssid.isBlank()) return@postDelayed
+            val cfg = readConfig()
+            XposedInit.log("[$TAG] retry #$attempt ssid='$ssid' trusted=${cfg.trustedSsids} auto=${cfg.autoEnable}")
+            if (ssid.isBlank()) {
+                retryConfig(handler, cm, wm, network, context)
+                return@postDelayed
+            }
             if (ssid == lastEnabledSsid) return@postDelayed
 
-            val config = readConfig()
-            if (config.autoEnable && ssid in config.trustedSsids) {
+            if (cfg.autoEnable && ssid in cfg.trustedSsids) {
                 XposedInit.log("[$TAG] Config appeared on retry #$attempt — enabling ADB")
                 lastEnabledSsid = ssid
                 retryCount.set(0)
-                enableAdb(context, config)
+                enableAdb(context, cfg)
             } else {
                 retryConfig(handler, cm, wm, network, context)
             }
@@ -476,8 +534,10 @@ object AdbSystemHooks {
 
     private fun enableAdb(context: Context, config: AdbConfig) {
         try {
+            val before = Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", -1)
             Settings.Global.putInt(context.contentResolver, "adb_wifi_enabled", 1)
-            XposedInit.log("[$TAG] adb_wifi_enabled=1 OK")
+            val after = Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", -1)
+            XposedInit.log("[$TAG] adb_wifi_enabled before=$before after=$after")
         } catch (t: Throwable) {
             XposedInit.log("[$TAG] Failed to enable ADB: ${t.message}")
         }
@@ -495,36 +555,34 @@ object AdbSystemHooks {
         }
     }
 
-    private fun disableAdb(context: Context) {
-        try {
-            Settings.Global.putInt(context.contentResolver, "adb_wifi_enabled", 0)
-        } catch (t: Throwable) {
-            XposedInit.log("[$TAG] Failed to disable ADB: ${t.message}")
-        }
-    }
-
     private data class AdbConfig(
         val autoEnable: Boolean = true,
-        val autoDisable: Boolean = false,
         val bootStart: Boolean = true,
         val locale: String = "system",
         val fixedPortEnabled: Boolean = false,
         val fixedPort: Int = 5555,
         val trustedSsids: Set<String> = emptySet()
     )
-
     private fun readConfig(): AdbConfig {
-        val file = File(CONFIG_PATH)
-        if (!file.exists() || !file.canRead()) return AdbConfig()
+        // Primary path: world-readable mirror at /data/local/tmp/.
+        // We cannot write to Settings.Global from a third-party APK
+        // because that requires WRITE_SECURE_SETTINGS. The mirror is
+        // written by Settings.syncConfigToFile() every time the user
+        // saves a config change. Set owner=root, mode=0644 — on most
+        // ROMs the settings process can read this. We catch
+        // permission errors explicitly and surface them in the log
+        // so on-device debugging can see exactly why a particular
+        // build is failing.
+        val file = File(SYNC_CONFIG_FILE)
         return try {
+            val raw = file.readText()
             val map = mutableMapOf<String, String>()
-            for (line in file.readLines()) {
+            for (line in raw.lines()) {
                 val idx = line.trim().indexOf('=')
                 if (idx > 0) map[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
             }
             AdbConfig(
                 autoEnable = map.getOrDefault("auto_enable", "true").toBooleanStrictOrNull() ?: true,
-                autoDisable = map.getOrDefault("auto_disable", "false").toBooleanStrictOrNull() ?: false,
                 bootStart = map.getOrDefault("boot_start", "true").toBooleanStrictOrNull() ?: true,
                 locale = map.getOrDefault("locale", "system"),
                 fixedPortEnabled = map.getOrDefault("fixed_port_enabled", "false").toBooleanStrictOrNull() ?: false,
@@ -533,8 +591,79 @@ object AdbSystemHooks {
                     .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
             )
         } catch (t: Throwable) {
-            XposedInit.log("[$TAG] readConfig: ${t.message}")
+            XposedInit.log("[$TAG] readConfig: ${t.javaClass.simpleName}: ${t.message}")
             AdbConfig()
         }
     }
+
+    /**
+     * Com.android.settings process hook. The Settings app is a privileged
+     * system app and gets the same ConnectivityManager / WifiManager /
+     * Settings.Global system services as system_server — they're shared
+     * singletons via ServiceManager. This means we can install the
+     * same NetworkCallback and the same Settings.Global writes without
+     * needing the actual system_server runtime. On OnePlus (where
+     * LSPosed scope "system" does not translate to a real system_server
+     * injection) this is the practical path to auto-toggle.
+     */
+    fun hookSettings(lpparam: LoadPackageParam) {
+        if (!registered.compareAndSet(false, true)) return
+        XposedInit.log("[$TAG] Loading settings-side hooks (process=${lpparam.processName})")
+        try {
+            val atClass = XposedHelpers.findClass("android.app.ActivityThread", null)
+            val activityThread = XposedHelpers.callStaticMethod(atClass, "currentActivityThread")
+            val context = XposedHelpers.callMethod(activityThread, "getSystemContext") as Context
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val wm = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val handler = Handler(Looper.getMainLooper())
+            if (cm == null || wm == null) {
+                XposedInit.log("[$TAG] settings-side: services not ready (cm=${cm != null}, wm=${wm != null})")
+                scheduleDeferredInit(context, handler, attempt = 1)
+                return
+            }
+            installCallbacks(context, cm, wm, handler)
+        } catch (t: Throwable) {
+            XposedInit.log("[$TAG] settings-side init failed: ${t.message}")
+            scheduleDeferredInitRetry(attempt = 1)
+        }
+    }
+
+    /**
+     * Persist a dump to Settings.Global as adb_x_wifi_list_count +
+     * adb_x_wifi_list_<i> chunks. Called from installCallbacks() once
+     * the dump has been collected by either the XML read, the
+     * WifiManager reflection, or the legacy cmd wifi / dumpsys wifi
+     * fallback paths. We split content into 4 kB slices because
+     * Settings.Global values cap at around 92 kB on most ROMs.
+     */
+    private fun persistDump(context: Context, dump: StringBuilder, source: String) {
+        try {
+            val content = dump.toString()
+            if (content.isBlank()) {
+                XposedInit.log("[$TAG] persistDump: empty dump, nothing to write ($source)")
+                return
+            }
+            val chunkSize = 4000
+            val chunks = content.chunked(chunkSize)
+            val resolver = context.contentResolver
+            val settings = android.provider.Settings.Global::class.java
+            val putString = settings.getMethod(
+                "putString",
+                android.content.ContentResolver::class.java,
+                String::class.java,
+                String::class.java
+            )
+            try { putString.invoke(null, resolver, "adb_x_wifi_list_count", chunks.size.toString()) } catch (_: Throwable) { }
+            for ((i, chunk) in chunks.withIndex()) {
+                try { putString.invoke(null, resolver, "adb_x_wifi_list_$i", chunk) }
+                    catch (t: Throwable) {
+                        XposedInit.log("[$TAG] persistDump putString failed at chunk $i: ${t.message}")
+                    }
+            }
+            XposedInit.log("[$TAG] dumped " + dump.lines().count { it.isNotBlank() } + " WiFi networks to Settings.Global (" + chunks.size + " chunks, source=$source)")
+        } catch (t: Throwable) {
+            XposedInit.log("[$TAG] persistDump failed: ${t.message}")
+        }
+    }
+
 }

@@ -6,7 +6,8 @@
     <!-- Bottom navigation -->
     <string name="nav_status">状态</string>
     <string name="nav_port">端口</string>
-    <string name="nav_networks">网络</string>
+    <string name="nav_wireless">无线</string>
+    <string name="nav_wired">有线</string>
     <string name="nav_settings">设置</string>
 
     <!-- Xposed framework status card -->
@@ -53,12 +54,14 @@
     <string name="btn_enable_adb">开启 ADB</string>
     <string name="btn_disable_adb">关闭 ADB</string>
     <string name="sw_auto_enable">连接信任 WiFi 时自动开启</string>
-    <string name="sw_auto_disable">离开时自动关闭</string>
     <string name="sw_boot_start">开机自启动</string>
     <string name="wifi_settings_title">Wi-Fi 设置</string>
     <string name="wifi_search_hint">搜索网络</string>
     <string name="wifi_no_match">没有匹配的网络</string>
     <string name="wifi_sort">排序</string>
+    <string name="wifi_refresh">刷新</string>
+    <string name="wifi_retry">重试</string>
+    <string name="wifi_unknown_error">未知错误</string>
     <string name="wifi_sort_alpha">按字母</string>
     <string name="wifi_sort_signal">按信号</string>
     <string name="wifi_sort_recent">按最近连接</string>
@@ -111,29 +114,66 @@
     <string name="dialog_xposed_refresh">刷新</string>
     <string name="msg_no_networks_root">未找到已保存的网络。\n请尝试:su -c \'cmd wifi list-networks\'\nRoot 可用但无输出。</string>
     <string name="msg_no_networks_noroot">未找到已保存的网络。\n无 Root 权限。\n请授予位置权限后重试。</string>
-    <string name="lang_system">跟随系统</string>
+        <string name="wifi_section_current">已连接</string>
+    <string name="wifi_section_saved">已保存的网络</string>
+    <string name="wifi_section_available">附近的 Wi-Fi</string>
+    <string name="wifi_section_collapse">折叠</string>
+    <string name="wifi_section_expand">展开</string>
+    <string name="wifi_signal_unknown">无信号</string>
+    <string name="wifi_out_of_range">不在范围</string>
+    <string name="wifi_connect_btn">连接</string>
+    <string name="wifi_forget_btn">忘记</string>
+    <string name="wifi_security_open">开放</string>
+    <string name="wifi_connected_badge">已连接</string>
+    <string name="wifi_saved_badge">已保存</string>
+    <string name="wifi_saved_empty_hint">此设备禁止 App 读取已保存的 Wi-Fi 列表。请前往系统 Wi-Fi 设置连入可信网络，LSPosed 模块激活后会显示在此处。</string>
+<string name="lang_system">跟随系统</string>
     <string name="lang_english">English</string>
     <string name="lang_chinese">中文</string>
     <string name="about_version">版本</string>
     <string name="about_module_id">模块 ID</string>
     <string name="about_source_code">源代码</string>
-    <!-- 信任 Wi-Fi 自动开关卡片 -->
-    <string name="section_trusted_wifi">信任 Wi-Fi 自动开关</string>
-    <string name="trusted_wifi_status_armed">自动开关已开启 · 当前 SSID %1$s (%2$s)</string>
-    <string name="trusted_wifi_status_disabled">自动开关已开启但在设置里被关闭</string>
-    <string name="trusted_wifi_status_no_ssids">自动开关已开启 · 还没有标记任何信任网络</string>
-    <string name="trusted_wifi_status_not_armed">自动开关已关闭</string>
-    <string name="trusted_wifi_trusted">信任</string>
-    <string name="trusted_wifi_untrusted">不信任</string>
+    <!-- Trusted Wi-Fi auto-toggle card -->
+    <string name="section_trusted_wifi">信任 Wi-Fi</string>
+    <string name="trusted_wifi_status_armed">自动开关已开启 · 当前 SSID %1$s %2$s</string>
+    <string name="trusted_wifi_status_disabled">自动开关已开启,但设置中已禁用</string>
+    <string name="trusted_wifi_status_no_ssids">自动开关已开启 · 尚未添加受信任网络</string>
+    <string name="trusted_wifi_status_not_armed">自动开关未开启</string>
+    <string name="trusted_wifi_trusted">已信任</string>
+    <string name="trusted_wifi_untrusted">未信任</string>
     <string name="trusted_wifi_last_trigger">最近触发: %1$s (%2$s)</string>
     <string name="trusted_wifi_never_triggered">还没有触发过</string>
     <string name="trusted_wifi_ago_minutes">%1$d 分钟前</string>
     <string name="trusted_wifi_ago_hours">%1$d 小时前</string>
     <string name="trusted_wifi_just_now">刚刚</string>
+    <string name="trust_current_ssid">信任</string>
+    <string name="trust_current_ssid_remove">取消信任</string>
+    <string name="trust_current_ssid_none">无 SSID</string>
     <!-- 信任 Wi-Fi 前台服务通知 -->
     <string name="trusted_wifi_channel_name">信任 Wi-Fi 自动开关</string>
     <string name="trusted_wifi_channel_desc">自动开关服务运行时显示的常驻通知</string>
     <string name="trusted_wifi_notif_title">ADB_X 自动开关运行中</string>
     <string name="trusted_wifi_notif_text">监听当前 Wi-Fi,自动切换无线调试</string>
     <string name="pairing_trigger_now">立即触发配对对话框</string>
+
+    <!-- Wired (USB) device auto-toggle card -->
+    <string name="section_wired">有线 USB</string>
+    <string name="wired_status_no_devices">未连接 USB 设备</string>
+    <string name="wired_status_devices_untrusted">已连接 %1$d 个设备 · 均未受信任</string>
+    <string name="wired_status_device_trusted">设备 %1$s 已受信任 · 自动开关已开启</string>
+    <string name="wired_status_disabled">自动开关未开启</string>
+    <string name="wired_device_label">厂商 %1$s · 产品 %2$s</string>
+    <string name="wired_device_serial_unknown">未知序列号</string>
+    <string name="wired_action_trust">信任此设备</string>
+    <string name="wired_action_untrust">取消信任</string>
+    <string name="wired_action_trusted">已信任</string>
+    <string name="wired_help">连接你信任的 USB 设备时,应用记住其序列号并自动开关 USB ADB。打开你想用的开关后,点"信任"。</string>
+    <string name="wired_auto_enable_summary">受信任设备连接时自动开启 ADB</string>
+    <string name="wired_auto_disable_summary">没有受信任设备时自动关闭 ADB</string>
+    <string name="wired_section_devices">已连接设备</string>
+    <string name="wired_action_toggle_on">立即开启 ADB</string>
+    <string name="wired_action_toggle_off">立即关闭 ADB</string>
+    <string name="wired_usb_state_on">USB 调试已开启</string>
+    <string name="wired_usb_state_off">USB 调试已关闭</string>
+    <string name="wired_toggle_failed">USB ADB 切换失败(需要 root)</string>
 </resources>
