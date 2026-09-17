@@ -69,11 +69,14 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "ADB_X_Main"
         private const val REQUEST_LOCATION = 1001
         private const val STATE_TAB = "selected_tab"
-        // Polling interval for the backup watcher. The ContentObserver is
-        // the primary path; this catches anything the observer misses on
-        // certain OEM ROMs (e.g. OnePlus doesn't always notify observers
-        // when the SystemUI adb-pairing dialog spawns a new transient port).
-        private const val PAIRING_POLL_INTERVAL_MS = 3000L
+        // Polling interval for the pairing-marker watcher. The
+        // ContentObserver is the primary path for adb_wifi_enabled; this
+        // catches the ephemeral pairing port the hook writes to
+        // /data/local/tmp (OnePlus doesn't always notify observers when the
+        // SystemUI adb-pairing dialog spawns a new transient port).
+        // Kept coarse on purpose: a tick is a single file read, and an
+        // ephemeral port lives ~120 s, so a few seconds of latency is fine.
+        private const val PAIRING_POLL_INTERVAL_MS = 5000L
     }
 
     val bgScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -85,6 +88,7 @@ class MainActivity : AppCompatActivity() {
     // Cached values for click-to-copy + cross-fragment reads.
     private var cachedLocalIp: String = ""
     private var cachedPort: String = ""
+    private var lastAutoCopiedAddress: String = ""
 
     // Latest status snapshot, used to re-render when the user switches tabs.
     data class StatusSnapshot(
@@ -97,6 +101,7 @@ class MainActivity : AppCompatActivity() {
         var localIp: String = "",
         var externalIp: String = "",
         var hasRoot: Boolean = false,
+        var adbMode: String = "",
         var xposed: XposedStatus.Info = XposedStatus.Info(
             state = XposedStatus.State.UNKNOWN, emptyList(), ""
         )
@@ -198,19 +203,24 @@ class MainActivity : AppCompatActivity() {
             contentResolver.registerContentObserver(ADB_WIFI_ENABLED_URI, false, observer)
         }
 
-        // 2. Watch parcel-related transient props. `service.adb.tcp.port`
-        //    and `service.adb.tls.port` are written by adbd on port-allocation
-        //    events, but they go through system properties — not Settings.Global.
-        //    ContentObserver can't see them. We do a short periodic poll from a
-        //    background coroutine: cheap (su getprop returns in <50 ms), and
-        //    keeps the pairing-port card live without requiring the hook.
+        // 2. Watch the hook-written pairing-port marker. The ephemeral
+        //    pairing port isn't exposed through Settings.Global, so a
+        //    ContentObserver can't see it. We poll the marker file instead —
+        //    one plain file read, no su — which keeps the pairing-port card
+        //    live without waking a shell process on every tick.
         pairingPollJob?.cancel()
         pairingPollJob = bgScope.launch {
             var lastPort = ""
             var lastEnabled: Boolean? = null
             while (isActive) {
                 try {
-                    val cur = AdbHelper.getPairingPort()
+                    // Marker-only probe. Deliberately NOT
+                    // AdbHelper.getPairingPort() — its fallback chain shells
+                    // out through su (dumpsys wifi + dumpsys adb, 3 s timeout
+                    // each) and would run on every tick. doMinimalRefresh()
+                    // below still uses the full resolver, so the expensive
+                    // path only runs when something actually changed.
+                    val cur = AdbHelper.peekPairingMarker()
                     val enabled = Settings.Global.getInt(
                         contentResolver, "adb_wifi_enabled", 0
                     ) == 1
@@ -218,20 +228,6 @@ class MainActivity : AppCompatActivity() {
                         lastPort = cur
                         lastEnabled = enabled
                         Log.d(TAG, "polling: pairingPort='$cur' enabled=$enabled → doMinimalRefresh")
-                        // Side-effect: once the polling loop has resolved an
-                        // ephemeral pairing port, persist it into
-                        // /data/local/tmp/adb_x_pairing_port so any future
-                        // hook path can pick the same value up. Use su
-                        // because the app uid cannot write
-                        // /data/local/tmp/ directly.
-                        if (cur.isNotEmpty() && (cur.toIntOrNull() ?: 0) in 1024..65535) {
-                            runCatching {
-                                top.cbug.adbx.util.ShellUtils.executeSu(
-                                    "sh -c 'echo $cur > /data/local/tmp/adb_x_pairing_port && chmod 666 /data/local/tmp/adb_x_pairing_port'",
-                                    1000
-                                )
-                            }
-                        }
                         mainHandler.post { doMinimalRefresh() }
                     }
                 } catch (t: Throwable) {
@@ -269,16 +265,10 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- Status refresh (used by fragments) ----------------
 
-    /**
-     * TODO: document refreshStatusAndPairing
-     */
     fun refreshStatusAndPairing() {
         renderXposedStatus()
     }
 
-    /**
-     * TODO: document doFullRefresh
-     */
     fun doFullRefresh() {
         if (refreshInProgress) return
         refreshInProgress = true
@@ -300,10 +290,12 @@ class MainActivity : AppCompatActivity() {
                     localIp = ip,
                     externalIp = extIp,
                     hasRoot = st.hasRoot,
+                    adbMode = st.mode,
                     xposed = xposed,
                 )
                 cachedLocalIp = ip
                 cachedPort = st.port
+                autoCopyAddressIfChanged()
 
                 withContext(Dispatchers.Main) {
                     pushStatusToActiveFragment()
@@ -322,33 +314,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun pushStatusToActiveFragment() {
         val frag = supportFragmentManager.findFragmentById(R.id.nav_host) ?: return
+        val model = buildStatusUiModel()
         when (frag) {
-            is StatusFragment -> frag.renderStatus(buildStatusUiModel())
+            is StatusFragment -> frag.renderStatus(model)
+            is NetworkFragment -> frag.renderPairing(
+                pairingPort = model.pairingPort,
+                pairingCode = model.pairingCode,
+                localIp = model.localIp,
+                externalIp = model.externalIp,
+                adbEnabled = model.adbState,
+            )
         }
     }
 
-    private fun buildStatusUiModel(): StatusFragment.UiModel {
-        return StatusFragment.UiModel(
+    private fun buildStatusUiModel(): StatusFragment.StatusModel {
+        return StatusFragment.StatusModel(
             xposedTitle = getString(when (status.xposed.state) {
                 XposedStatus.State.ACTIVE   -> R.string.xposed_active_title
                 XposedStatus.State.INACTIVE -> R.string.xposed_inactive_title
                 XposedStatus.State.UNKNOWN  -> R.string.xposed_inactive_title
             }),
-            xposedSubtitle = getString(when (status.xposed.state) {
-                XposedStatus.State.ACTIVE   -> R.string.xposed_active_subtitle
+            xposedSubtitle = when (status.xposed.state) {
+                XposedStatus.State.ACTIVE ->
+                    getString(R.string.xposed_active_subtitle)
                 XposedStatus.State.INACTIVE ->
                     if (status.xposed.frameworkPackages.isEmpty())
-                        R.string.xposed_inactive_subtitle_no_frame
+                        getString(R.string.xposed_inactive_subtitle_no_frame)
                     else
-                        R.string.xposed_inactive_subtitle_with_frame
-                XposedStatus.State.UNKNOWN  -> R.string.xposed_inactive_subtitle_no_frame
-            }).let {
-                // INACTIVE subtitle uses %1$s for the framework-package list —
-                // inject the actual list. ACTIVE subtitle has no placeholders
-                // so we pass it through unchanged.
-                val args = status.xposed.frameworkPackages.joinToString(", ")
-                if (status.xposed.state == XposedStatus.State.ACTIVE) it
-                else getString(R.string.xposed_inactive_subtitle_with_frame, args)
+                        getString(
+                            R.string.xposed_inactive_subtitle_with_frame,
+                            status.xposed.frameworkPackages.joinToString(", ")
+                        )
+                XposedStatus.State.UNKNOWN ->
+                    getString(R.string.xposed_inactive_subtitle_no_frame)
             },
             xposedChipText = getString(when (status.xposed.state) {
                 XposedStatus.State.ACTIVE   -> R.string.xposed_state_active
@@ -365,6 +363,7 @@ class MainActivity : AppCompatActivity() {
             localIp = status.localIp,
             externalIp = status.externalIp,
             hasRoot = status.hasRoot,
+            adbMode = status.adbMode,
         )
     }
 
@@ -379,48 +378,8 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- WiFi refresh ----------------
 
-    /**
-     * App-side poll of dumpsys as a backup path for the LSPosed hook.
-     * When the candidate classes don't match this ROM, this is what
-     * surfaces the (transient) pairing port to AdbHelper.
-     */
-    fun pollPairingPort() {
-        bgScope.launch {
-            try {
-                val r = ShellUtils.executeSu(
-                    "dumpsys activity provider com.android.adb 2>&1 | head -200",
-                    2000
-                )
-                if (r.isSuccess() && r.output.isNotBlank()) {
-                    android.util.Log.d("ADB_X_Main", "adb provider dump\n" + r.output.take(400))
-                }
-            } catch (_: Throwable) { }
-        }
-    }
-
-    /**
-     * Refresh the wifi list. Previously called from NetworkFragment
-     * on first resume / refresh-button tap, but it shared
-     * refreshInProgress with doFullRefresh() and would toast
-     * "仍在加载" every time the user switched tabs while a status
-     * refresh was in flight. The wifi list now lives inside
-     * WifiSettingsActivity, which has its own per-activity loading
-     * state — no MainActivity-level orchestration needed. The method
-     * is kept here only as a no-op shim in case external callers
-     * (e.g. tests) still reference it.
-     */
-    @Deprecated("Wi-Fi list is loaded by WifiSettingsActivity itself.")
-    fun refreshWifiList() {
-        // Intentionally empty. The wifi tab no longer surfaces the
-        // list and WifiSettingsActivity owns the loading lifecycle.
-    }
-
     // ---------------- Port apply ----------------
 
-    /**
-     * TODO: document applyFixedPort
-     * @param Int
-     */
     fun applyFixedPort(port: Int) {
         AppSettings.fixedPort = port
         AppSettings.save(this)
@@ -436,9 +395,6 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- Pairing dialog ----------------
 
-    /**
-     * TODO: document showSetPairingDialog
-     */
     fun showSetPairingDialog() {
         val input = EditText(this).apply {
             hint = getString(R.string.dialog_pairing_hint)
@@ -463,23 +419,14 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * TODO: document openWifiSettingsActivity
-     */
     fun openWifiSettingsActivity() {
         startActivity(Intent(this, WifiSettingsActivity::class.java))
     }
 
-    /**
-     * TODO: document openPairingActivity
-     */
     fun openPairingActivity() {
         startActivity(Intent(this, PairingActivity::class.java))
     }
 
-    /**
-     * TODO: document showXposedHelpDialog
-     */
     fun showXposedHelpDialog() {
         val info = XposedStatus.probe(this)
         val detected = if (info.frameworkPackages.isEmpty()) "  (none)"
@@ -506,9 +453,6 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- Permissions ----------------
 
-    /**
-     * TODO: document requestNeededPermissions
-     */
     fun requestNeededPermissions() {
         val missing = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -571,6 +515,7 @@ class MainActivity : AppCompatActivity() {
                     ssid = ssid,
                     localIp = localIp,
                     hasRoot = hasRoot,
+                    adbMode = "",
                     xposed = xposed,
                 )
                 cachedLocalIp = localIp
@@ -595,9 +540,6 @@ class MainActivity : AppCompatActivity() {
                 .getString(top.cbug.adbx.WifiStateReceiver.KEY_SSID, "") ?: ""
         } catch (_: Throwable) { "" }
     }
-    /**
-     * TODO: document getTrustedWifiLastActionMs
-     */
     fun getTrustedWifiLastActionMs(): Long {
         return try {
             getSharedPreferences(top.cbug.adbx.WifiStateReceiver.PREFS, android.content.Context.MODE_PRIVATE)
@@ -605,22 +547,34 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Throwable) { 0L }
     }
 
+    // ---------------- Auto copy address on change ----------------
+
+    private fun autoCopyAddressIfChanged() {
+        if (!AppSettings.autoCopyAddressEnabled) return
+        val text = when {
+            cachedLocalIp.isNotEmpty() && cachedPort.isNotEmpty() -> "$cachedLocalIp:$cachedPort"
+            cachedLocalIp.isNotEmpty() -> cachedLocalIp
+            cachedPort.isNotEmpty() -> cachedPort
+            else -> return
+        }
+        if (text.isEmpty() || text == lastAutoCopiedAddress) return
+        lastAutoCopiedAddress = text
+        try {
+            copyToClipboard("ADB address", text)
+            toast(getString(R.string.msg_address_auto_copied, text))
+            Log.d(TAG, "auto copied address: $text")
+        } catch (_: Throwable) {
+            Log.w(TAG, "auto copy failed")
+        }
+    }
+
     // ---------------- Misc helpers ----------------
 
-    /**
-     * TODO: document toast
-     * @param String
-     */
     fun toast(msg: String) {
         if (isFinishing || isDestroyed) return
         mainHandler.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
     }
 
-    /**
-     * TODO: document copyToClipboard
-     * @param String
-     * @param String
-     */
     fun copyToClipboard(label: String, text: String) {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText(label, text))
@@ -629,11 +583,6 @@ class MainActivity : AppCompatActivity() {
     fun currentCachedIp(): String = cachedLocalIp
     fun currentCachedPort(): String = cachedPort
 
-    /**
-     * TODO: document toggleTrusted
-     * @param String
-     * @param Boolean
-     */
     fun toggleTrusted(ssid: String, trusted: Boolean) {
         if (trusted) AppSettings.addTrusted(ssid) else AppSettings.removeTrusted(ssid)
         AppSettings.save(this)

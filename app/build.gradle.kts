@@ -11,8 +11,8 @@ android {
         applicationId = "top.cbug.adbx"
         minSdk = 30
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.1.1"
+        versionCode = 5
+        versionName = "1.1.2"
     }
 
     signingConfigs {
@@ -65,6 +65,7 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
     implementation("androidx.preference:preference-ktx:1.2.1")
+    testImplementation("junit:junit:4.13.2")
 }
 
 

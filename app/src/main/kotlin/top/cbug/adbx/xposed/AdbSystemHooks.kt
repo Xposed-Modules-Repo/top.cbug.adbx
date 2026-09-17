@@ -25,7 +25,6 @@ import java.util.concurrent.atomic.AtomicInteger
 object AdbSystemHooks {
 
     private const val TAG = "ADB_X_SystemHooks"
-    private const val CONFIG_PATH = "/data/system/adb_x_config.txt"
     private const val SYNC_CONFIG_FILE = "/data/system/adb_x_config.txt"
     private val registered = AtomicBoolean(false)
 
@@ -37,10 +36,6 @@ object AdbSystemHooks {
     private val maxRetries = 8
     private val retryDelayMs = 10000L
 
-    /**
-     * TODO: document hook
-     * @param LoadPackageParam
-     */
     fun hook(lpparam: LoadPackageParam) {
         if (!registered.compareAndSet(false, true)) return
         XposedInit.log("[$TAG] Loading system_server hooks")
@@ -48,8 +43,14 @@ object AdbSystemHooks {
         // Best-effort hooks first — these don't need system services and
         // should always run regardless of whether connectivity/wifi come
         // up in time. They only need class loading, which is stable.
-        hookPairingDialog()
-        hookPairingFuzzy()
+        //
+        // Pass the injected class loader through: system_server's own
+        // framework classes resolve from the bootstrap loader, but OEM
+        // classes (com.oplus.adbd.*) may sit in a per-process loader that
+        // a null loader cannot see.
+        val cl = lpparam.classLoader
+        hookPairingDialog(cl)
+        hookPairingFuzzy(cl)
 
         try {
             val atClass = XposedHelpers.findClass("android.app.ActivityThread", null)
@@ -227,56 +228,67 @@ object AdbSystemHooks {
             // so the slow boot only blocks the very first refresh
             // after a WiFi state change.
             try {
-                val dump = StringBuilder()
-                // Stream dumpsys wifi into a temp file so a hung
-                // dumpsys output stream doesn't deadlock us into
-                // the waitFor timeout. We redirect stdout into the
-                // pipe and parse line-by-line on the reader side;
-                // if the call hangs the timeout fires and we destroy
-                // the process, which closes the pipe and unblocks
-                // the reader.
-                try {
-                    XposedInit.log("[$TAG] dumping via dumpsys wifi (60s ceiling)")
-                    val proc = ProcessBuilder("/system/bin/dumpsys", "wifi")
-                        .redirectErrorStream(true)
-                        .start()
-                    // Stream the output on a background thread so
-                    // the child's stdout pipe doesn't deadlock
-                    // waitFor() at ~64 kB of buffered output. We
-                    // cancel the read after 60 s by joining the
-                    // reader thread with the same deadline.
-                    val seen = HashSet<String>()
-                    val idSsidRegex = Regex("""ID:\s*\d+\s+SSID:\s*"?([^"\n]+?)"?\s+PROVIDER""")
-                    val readerThread = Thread {
+                // dumpsys wifi is slow on some ROMs and can take >10 s.
+                // Fire-and-forget on a worker thread. installCallbacks()
+                // runs on the system_server main thread during
+                // handleLoadPackage, so awaiting the dump here would
+                // block that thread for up to the timeout and trip an ANR.
+                Thread {
+                    try {
+                        val dump = StringBuilder()
+                        // Stream dumpsys wifi into a temp file so a
+                        // hung output stream doesn't deadlock us into
+                        // the waitFor timeout. We redirect stdout into
+                        // the pipe and parse line-by-line on the reader
+                        // side; if the call hangs the timeout fires and
+                        // we destroy the process, which closes the pipe
+                        // and unblocks the reader.
                         try {
-                            proc.inputStream.bufferedReader().useLines { lines ->
-                                for (line in lines) {
-                                    val m = idSsidRegex.find(line) ?: continue
-                                    val ssid = m.groupValues[1].trim()
-                                    if (ssid.isNotBlank() && ssid != "<unknown ssid>") seen.add(ssid)
-                                }
+                            XposedInit.log("[$TAG] dumping via dumpsys wifi (60s ceiling)")
+                            val proc = ProcessBuilder("/system/bin/dumpsys", "wifi")
+                                .redirectErrorStream(true)
+                                .start()
+                            // Stream the output on a background thread so
+                            // the child's stdout pipe doesn't deadlock
+                            // waitFor() at ~64 kB of buffered output. We
+                            // cancel the read after 60 s by joining the
+                            // reader thread with the same deadline.
+                            val seen = HashSet<String>()
+                            val idSsidRegex = Regex("""ID:\s*\d+\s+SSID:\s*"?([^"\n]+?)"?\s+PROVIDER""")
+                            val readerThread = Thread {
+                                try {
+                                    proc.inputStream.bufferedReader().useLines { lines ->
+                                        for (line in lines) {
+                                            val m = idSsidRegex.find(line) ?: continue
+                                            val ssid = m.groupValues[1].trim()
+                                            if (ssid.isNotBlank() && ssid != "<unknown ssid>") seen.add(ssid)
+                                        }
+                                    }
+                                } catch (_: Throwable) { }
                             }
-                        } catch (_: Throwable) { }
+                            readerThread.isDaemon = true
+                            readerThread.start()
+                            val finished = proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+                            if (!finished) {
+                                proc.destroyForcibly()
+                            }
+                            readerThread.join(2000)
+                            XposedInit.log("[$TAG] dumpsys wifi finished=" + finished + " regex parsed " + seen.size + " SSIDs")
+                            for (s in seen) {
+                                dump.append(s).append('|')
+                                    .append("|Secured\n")
+                            }
+                        } catch (t: Throwable) {
+                            XposedInit.log("[$TAG] dumpsys wifi failed: ${t.message}")
+                        }
+                        val source = if (dump.isNotEmpty()) "dumpsys-wifi" else "empty"
+                        persistDump(context, dump, source)
+                    } catch (t: Throwable) {
+                        XposedInit.log("[$TAG] WiFi dump failed: ${t.message}")
                     }
-                    readerThread.isDaemon = true
-                    readerThread.start()
-                    val finished = proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
-                    if (!finished) {
-                        proc.destroyForcibly()
-                    }
-                    readerThread.join(2000)
-                    XposedInit.log("[$TAG] dumpsys wifi finished=" + finished + " regex parsed " + seen.size + " SSIDs")
-                    for (s in seen) {
-                        dump.append(s).append('|')
-                            .append("|Secured\n")
-                    }
-                } catch (t: Throwable) {
-                    XposedInit.log("[$TAG] dumpsys wifi failed: ${t.message}")
-                }
-                val source = if (dump.isNotEmpty()) "dumpsys-wifi" else "empty"
-                persistDump(context, dump, source)
+                }.start()
             } catch (t: Throwable) {
-                XposedInit.log("[$TAG] WiFi dump failed: ${t.message}")
+                XposedInit.log("[$TAG] WiFi dump spawn failed: ${t.message}")
             }
 
             // 5. Pair-request watcher: app writes /data/local/tmp/adb_x_request_pair
@@ -309,7 +321,14 @@ object AdbSystemHooks {
                         val raw = requestFile.readText().trim()
                         XposedInit.log("[$TAG] pair-request detected: $raw")
                         try { requestFile.delete() } catch (_: Throwable) { }
-                        if (raw == "1") triggerAdbPairing(context)
+                        if (raw == "1") {
+                            // triggerAdbPairing uses reflection + Runtime.exec;
+                            // run it off the main handler so a slow OEM path
+                            // cannot block system_server's main thread.
+                            Thread {
+                                try { triggerAdbPairing(context) } catch (_: Throwable) { }
+                            }.start()
+                        }
                     }
                 } catch (t: Throwable) {
                     XposedInit.log("[$TAG] pair-request poll error: ${t.message}")
@@ -361,7 +380,7 @@ object AdbSystemHooks {
     }
 
 
-    private fun hookPairingDialog() {
+    private fun hookPairingDialog(classLoader: ClassLoader?) {
         // Candidate classes across Android versions. Each entry is
         // (className, fieldNameHoldingPort). On match, the value is
         // persisted to /data/local/tmp/adb_x_pairing_port for the app
@@ -375,7 +394,7 @@ object AdbSystemHooks {
         )
         for ((className, fieldName) in candidates) {
             try {
-                val cls = XposedHelpers.findClass(className, null)
+                val cls = XposedHelpers.findClass(className, classLoader)
                 XposedHelpers.findField(cls, fieldName)
                 XposedHelpers.findAndHookConstructor(cls, Any::class.java, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
@@ -405,7 +424,7 @@ object AdbSystemHooks {
      * regardless of which inner class OnePlus renamed in this
      * particular OxygenOS build.
      */
-    private fun hookPairingFuzzy() {
+    private fun hookPairingFuzzy(classLoader: ClassLoader?) {
         // Expanded candidate list covering AOSP + OnePlus renames.
         // Each entry is a (className, fieldName) pair; we walk fields
         // generically on every new instance instead of relying on a
@@ -428,7 +447,7 @@ object AdbSystemHooks {
         )
         for (className in candidates) {
             try {
-                val cls = XposedHelpers.findClass(className, null)
+                val cls = XposedHelpers.findClass(className, classLoader)
                 XposedHelpers.findAndHookConstructor(cls, Any::class.java, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         try {

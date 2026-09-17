@@ -8,6 +8,7 @@ import android.net.wifi.WifiManager
 import android.util.Log
 import top.cbug.adbx.store.Settings as AppSettings
 import top.cbug.adbx.util.AdbHelper
+import top.cbug.adbx.util.BootLogger
 import top.cbug.adbx.util.WifiHelper
 
 /**
@@ -43,12 +44,12 @@ import top.cbug.adbx.util.WifiHelper
 class WifiStateReceiver : BroadcastReceiver() {
 
 
-
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         if (action != WifiManager.NETWORK_STATE_CHANGED_ACTION &&
             action != ACTION_INTERNAL_FIRE) return
 
+        BootLogger.init(context)
         val pending = goAsync()
         try {
             try {
@@ -57,33 +58,46 @@ class WifiStateReceiver : BroadcastReceiver() {
 
             if (!AppSettings.autoEnable) {
                 Log.d(TAG, "auto-enable not armed, skip")
+                BootLogger.append("auto-enable not armed")
                 return
             }
 
             val ssid = WifiHelper.getCurrentSsid(context)
-            Log.d(TAG, "Wi-Fi state changed: ssid='" + ssid + "' action=" + action)
+            Log.d(TAG, "Wi-Fi state changed: ssid='$ssid' action=$action")
+            BootLogger.append("wifi action=$action ssid=$ssid")
             if (ssid.isBlank()) {
                 Log.d(TAG, "empty SSID, skip")
+                BootLogger.append("empty ssid skip")
                 return
             }
 
             val trusted = AppSettings.isTrusted(ssid)
             if (trusted) {
-                Log.i(TAG, "trusted SSID " + ssid + ", enabling wireless ADB")
-                AdbHelper.enableWirelessAdb()
-                recordLastTrigger(context, ssid)
+                // Skip the write when wireless ADB is already on: each
+                // enableWirelessAdb() costs four su invocations, and this
+                // receiver fires on every Wi-Fi state change.
+                val alreadyOn = try {
+                    android.provider.Settings.Global.getInt(
+                        context.contentResolver, "adb_wifi_enabled", 0
+                    ) == 1
+                } catch (_: Throwable) { false }
+                if (alreadyOn) {
+                    Log.d(TAG, "trusted SSID $ssid but ADB already on, skipping write")
+                    BootLogger.append("trusted ssid=$ssid already-on skip")
+                } else {
+                    Log.i(TAG, "trusted SSID $ssid, enabling wireless ADB")
+                    BootLogger.append("trusted ssid=$ssid enable")
+                    AdbHelper.enableWirelessAdb()
+                    recordLastTrigger(context, ssid)
+                }
             } else {
-                Log.d(TAG, "non-trusted SSID " + ssid + ", leaving wireless ADB unchanged (Android handles disconnect)")
+                Log.d(TAG, "non-trusted SSID $ssid, leaving wireless ADB unchanged (Android handles disconnect)")
+                BootLogger.append("non-trusted ssid=$ssid skip")
             }
         } catch (t: Throwable) {
             Log.w(TAG, "evaluate failed", t)
+            BootLogger.append("evaluate failed ${t.message ?: "unknown"}")
         } finally {
-            // Single, authoritative finish for the goAsync() token.
-            // Early-return paths in the try block used to call
-            // pending.finish() inline; that double-finish throws
-            // IllegalStateException("Broadcast already finished")
-            // and crashes the process when NETWORK_STATE_CHANGED
-            // fires while no SSID is connected.
             try { pending.finish() } catch (_: Throwable) { }
         }
     }
