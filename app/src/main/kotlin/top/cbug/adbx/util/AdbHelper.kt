@@ -24,52 +24,93 @@ object AdbHelper {
      * keeps the "配对进行中" card showing after the dialog has closed. */
     private const val PORT_MARKER_TTL_MS = 5 * 60 * 1000L
 
+    /** One-time system pairing code (written by the Settings hook) expires
+     *  with the dialog, ~120 s. Keep a small safety margin. */
+    private const val SESSION_CODE_TTL_MS = 3 * 60 * 1000L
+
     /** Use settings global as primary check (works on Rust adbd too) */
     fun isAdbWifiEnabled(context: Context): Boolean {
         return getCurrentState(context)
     }
 
-    /** Get current ADB port - prefers non-root method first */
-    fun getCurrentPort(): String {
-        val nr = getCurrentPortNonRoot()
-        if (nr.isNotEmpty()) return nr
-        if (!ShellUtils.hasRoot()) return ""
-        for (prop in arrayOf(
-            "service.adb.tls.port",
-            "service.adb.tcp.port"
-        )) {
-            val r = ShellUtils.executeSu("getprop " + prop, 500)
-            if (r.isSuccess()) {
-                val out = r.output.trim()
-                if (out.isNotEmpty() && out != "0" && out.all { it.isDigit() }) {
-                    return out.filter { it.isDigit() }.take(5)
+    /**
+     * The port adbd is ACTUALLY listening on, from the authoritative
+     * system source. On Android 11+ Wireless debugging (TLS) adbd picks
+     * a random ephemeral port each time it starts; `service.adb.tls.port`
+     * is a legacy prop it does NOT read — writing 5555 there and reading
+     * it back only proves the prop was written, never that adbd moved.
+     * `dumpsys adb` -> adb_wifi.tls_port is the real value (verified on
+     * device: prop=5555 but tls_port=34241).
+     *
+     * In fixed-TCP mode (`adb tcpip 5555`), the port is `service.adb.tcp.port`
+     * and tls_port keeps its own random value, so we prefer the tcp prop
+     * when the user opted into TCP mode.
+     */
+    fun getRealConnectPort(): String {
+        val tcpMode = isTcpModePreferred()
+        if (tcpMode) {
+            val tcp = tryReadProp("service.adb.tcp.port")
+            if (tcp.isNotEmpty()) return tcp
+        }
+        // Authoritative TLS port from dumpsys adb (works with or without root).
+        val dump = if (ShellUtils.hasRoot())
+            ShellUtils.executeSu("dumpsys adb 2>/dev/null", 2500)
+        else
+            ShellUtils.execute("dumpsys adb 2>/dev/null", 2500)
+        if (dump.isSuccess() && dump.output.isNotBlank()) {
+            val block = Regex("""adb_wifi\s*=\s*\{([\s\S]*?)\}""")
+                .find(dump.output)?.groupValues?.get(1) ?: dump.output
+            val enabled = Regex("""enabled\s*=\s*(\w+)""")
+                .find(block)?.groupValues?.get(1)?.equals("true", true) ?: false
+            if (enabled) {
+                val tls = Regex("""tls_port\s*=\s*(\d+)""")
+                    .find(block)?.groupValues?.get(1)
+                if (tls != null && tls.toIntOrNull() in 1024..65535 && tls != "0") {
+                    Log.d(TAG, "getRealConnectPort: dumpsys tls_port=$tls")
+                    return tls
                 }
             }
+        }
+        // Fallback for fixed-TCP mode where dumpsys may be unavailable.
+        val tcp = tryReadProp("service.adb.tcp.port")
+        if (tcp.isNotEmpty() && tcp != "5555") return tcp
+        return ""
+    }
+
+    private fun tryReadProp(name: String): String {
+        val out = try {
+            val su = if (ShellUtils.hasRoot()) ShellUtils.executeSu("getprop $name", 500)
+                     else ShellUtils.execute("getprop $name", 500)
+            su.output.trim()
+        } catch (_: Throwable) { "" }
+        return if (out.isNotEmpty() && out.all { it.isDigit() } && out.toIntOrNull() in 1024..65535)
+            out else ""
+    }
+
+    /** Current connect port — authoritative dumpsys source first. */
+    fun getCurrentPort(): String {
+        val real = getRealConnectPort()
+        if (real.isNotEmpty()) return real
+        // Last resort only: legacy props (may be stale; never claim these
+        // are the live TLS port unless nothing better exists).
+        for (prop in arrayOf("service.adb.tcp.port", "service.adb.tls.port")) {
+            val p = tryReadProp(prop)
+            if (p.isNotEmpty() && p != "5555") return p
         }
         return ""
     }
 
-    /** Non-root: read service props (all processes can read) */
+    /** Non-root port read. Refuses to trust props when wireless is off. */
     fun getCurrentPortNonRoot(): String {
-        // Settings.Global.ADB_WIFI_ENABLED is the authoritative on/off switch
-        // for wireless ADB on Android 13+. If it's off, the port shown by
-        // getprop is stale and we should refuse to call the device "active".
-        // Hardcode the string instead of the API 33 constant.
-        // Try getInt first, but fall back to getString — Android stores the
-        // value as either depending on how it was written, and adb shell
-        // settings uses getString. Without this fallback the two can
-        // disagree.
         val wEnabled = try {
             android.provider.Settings.Global.getInt(
-                top.cbug.adbx.App.appContext.contentResolver,
-                "adb_wifi_enabled", 0
+                top.cbug.adbx.App.appContext.contentResolver, "adb_wifi_enabled", 0
             )
         } catch (_: Throwable) { -1 }
         val effective = if (wEnabled != 0) wEnabled else {
             try {
                 when (android.provider.Settings.Global.getString(
-                    top.cbug.adbx.App.appContext.contentResolver,
-                    "adb_wifi_enabled"
+                    top.cbug.adbx.App.appContext.contentResolver, "adb_wifi_enabled"
                 )) {
                     "1" -> 1
                     "0" -> 0
@@ -78,19 +119,10 @@ object AdbHelper {
             } catch (_: Throwable) { wEnabled }
         }
         if (effective == 0) {
-            Log.d(TAG, "getCurrentPortNonRoot: adb_wifi_enabled=0, skipping setprop port")
+            Log.d(TAG, "getCurrentPortNonRoot: adb_wifi_enabled=0")
             return ""
         }
-        for (prop in arrayOf(
-            "service.adb.tls.port",
-            "service.adb.tcp.port"
-        )) {
-            val out = ShellUtils.execute("getprop " + prop, 500).output.trim()
-            if (out.isNotEmpty() && out != "0" && out.all { it.isDigit() }) {
-                return out.filter { it.isDigit() }.take(5)
-            }
-        }
-        return ""
+        return getRealConnectPort()
     }
 
     /** Best-effort wireless ADB state detection.
@@ -187,55 +219,172 @@ object AdbHelper {
         } catch (_: Throwable) { false }
     }
 
+    /**
+     * Enable wireless ADB. Returns the ACTUAL outcome: this was a
+     * silent no-op with a hardcoded `return true` before, which made
+     * the UI show success on devices where su was unavailable.
+     * Verification reads back Settings.Global — the authoritative
+     * switch on Android 13+ — not just the su exit code.
+     */
     fun enableWirelessAdb(): Boolean {
         Log.d(TAG, "enableWirelessAdb")
-        // On modern Android (14+, Rust adbd) the authoritative way is
-        // settings put global.  NEVER restart adbd — that kills the
-        // wireless connection we're running over.
-        ShellUtils.executeSu("settings put global adb_wifi_enabled 1", 1500)
-        if (isTcpModePreferred()) {
-            ShellUtils.executeSu("setprop service.adb.tls.port 0", 500)
-            ShellUtils.executeSu("setprop service.adb.tcp.port 5555", 500)
-        } else {
-            ShellUtils.executeSu("setprop service.adb.tls.port 5555", 500)
-            ShellUtils.executeSu("setprop service.adb.tcp.port 5555", 500)
+        if (!ShellUtils.hasRoot()) {
+            Log.w(TAG, "enableWirelessAdb: no root, cannot write settings")
+            return false
         }
-        return true
+        // On modern Android (14+, Rust adbd) the authoritative way is
+        // settings put global. NEVER restart adbd — that kills the
+        // wireless connection we're running over.
+        val r = ShellUtils.executeSu("settings put global adb_wifi_enabled 1", 1500)
+        if (!r.isSuccess()) {
+            Log.w(TAG, "enableWirelessAdb: settings put failed: ${r.output.take(120)}")
+            return false
+        }
+        // Read back the authoritative switch.
+        val on = try {
+            android.provider.Settings.Global.getInt(
+                top.cbug.adbx.App.appContext.contentResolver, "adb_wifi_enabled", 0
+            ) == 1
+        } catch (_: Throwable) { false }
+        Log.d(TAG, "enableWirelessAdb: verified on=$on")
+        return on
     }
 
     fun disableWirelessAdb(): Boolean {
         Log.d(TAG, "disableWirelessAdb")
-        ShellUtils.executeSu("settings put global adb_wifi_enabled 0", 1500)
-        ShellUtils.executeSu("setprop service.adb.tls.port 0", 500)
-        ShellUtils.executeSu("setprop service.adb.tcp.port 0", 500)
-        return true
+        if (!ShellUtils.hasRoot()) {
+            Log.w(TAG, "disableWirelessAdb: no root")
+            return false
+        }
+        val r = ShellUtils.executeSu("settings put global adb_wifi_enabled 0", 1500)
+        if (!r.isSuccess()) {
+            Log.w(TAG, "disableWirelessAdb: settings put failed: ${r.output.take(120)}")
+            return false
+        }
+        val off = try {
+            android.provider.Settings.Global.getInt(
+                top.cbug.adbx.App.appContext.contentResolver, "adb_wifi_enabled", 1
+            ) == 0
+        } catch (_: Throwable) { false }
+        Log.d(TAG, "disableWirelessAdb: verified off=$off")
+        return off
     }
 
-    fun setFixedPort(port: Int): Boolean {
+    /**
+     * Enable fixed-port TCP mode — the device-side equivalent of
+     * `adb tcpip <port>`. This is the ONLY way to get a stable port
+     * on Android 11+: TLS wireless debugging always picks a random
+     * ephemeral port and ignores service.adb.tls.port (verified on
+     * device: prop=5555, actual tls_port=34241).
+     *
+     * Restarting adbd is REQUIRED for the new prop to take effect, and
+     * it briefly drops any live adb connection. We try resetprop
+     * (KernelSU/Magisk) then setprop, and ask init to restart adbd.
+     * Verified by reconnecting to the fixed port, not by shell rc.
+     *
+     * Returns true only when the tcp prop reads back as [port]; the
+     * caller must tell the user the connection may drop for a moment.
+     */
+    fun enableTcpMode(port: Int): Boolean {
+        if (!ShellUtils.hasRoot()) {
+            Log.w(TAG, "enableTcpMode: no root")
+            return false
+        }
+        if (port !in 1024..65535) return false
+        // resetprop changes Even read-only props and survives on
+        // KernelSU/Magisk. Fall back to plain setprop.
+        val setCmd = "resetprop service.adb.tcp.port $port 2>/dev/null || setprop service.adb.tcp.port $port"
+        ShellUtils.executeSu(setCmd, 2000)
         ShellUtils.executeSu("settings put global adb_wifi_enabled 1", 1000)
-        ShellUtils.executeSu("setprop service.adb.tcp.port " + port, 500)
-        val r = ShellUtils.executeSu(
-            "setprop service.adb.tls.port " + port, 2000)
-        Log.d(TAG, "setFixedPort(" + port + "): " + r.output.trim())
-        return r.isSuccess()
+        // Ask init to restart adbd so it re-binds to the fixed port.
+        // On some ROMs this is SELinux-blocked; try both forms.
+        val restart = ShellUtils.executeSu(
+            "setprop ctl.restart adbd 2>/dev/null || (stop adbd; start adbd)", 4000)
+        Log.d(TAG, "enableTcpMode: restart rc=${restart.exitCode} out=${restart.output.take(120)}")
+        // Read back the prop we control. This proves our config stuck;
+        // the UI separately shows the live connect port via getRealConnectPort().
+        val tcp = tryReadProp("service.adb.tcp.port")
+        val ok = tcp == port.toString()
+        Log.d(TAG, "enableTcpMode($port): tcp prop=$tcp verified=$ok")
+        return ok
+    }
+
+    /** Restore TLS wireless debugging and drop the fixed TCP port. */
+    fun disableTcpMode(): Boolean {
+        if (!ShellUtils.hasRoot()) return false
+        ShellUtils.executeSu("resetprop service.adb.tcp.port 0 2>/dev/null || setprop service.adb.tcp.port 0", 2000)
+        ShellUtils.executeSu("setprop ctl.restart adbd 2>/dev/null || (stop adbd; start adbd)", 4000)
+        val tcp = tryReadProp("service.adb.tcp.port")
+        Log.d(TAG, "disableTcpMode: tcp prop=$tcp")
+        return tcp.isEmpty() || tcp == "0" || tcp == "5555"
     }
 
     fun setPairingCode(code: String): Boolean {
         if (code.length !in 6..8 || !code.all { it.isDigit() }) return false
-        writePairingCodeFile(code)
-        Log.d(TAG, "Pairing code stored: " + code)
-        return true
+        if (!writePairingCodeFile(code)) return false
+        // Verify read-back instead of claiming success blindly.
+        val stored = readPairingCode()
+        Log.d(TAG, "setPairingCode: stored=$stored (requested=$code)")
+        return stored == code
     }
 
-    private fun writePairingCodeFile(code: String) {
+    private fun writePairingCodeFile(code: String): Boolean {
+        if (!ShellUtils.hasRoot()) {
+            Log.w(TAG, "writePairingCodeFile: no root")
+            return false
+        }
         // Remove old file first to avoid readPairingCode() picking up a stale value
         ShellUtils.executeSu("rm -f /data/local/tmp/adb_x_pairing_code", 500)
-        ShellUtils.executeSu(
+        val r = ShellUtils.executeSu(
             "echo '" + code + "' > /data/local/tmp/adb_x_pairing_code && chmod 644 /data/local/tmp/adb_x_pairing_code",
             2000)
+        return r.isSuccess()
+    }
+
+    /**
+     * Read the one-time pairing code captured by the Settings hook from the
+     * live system pairing dialog. Honors a TTL so a code from a closed
+     * session never lingers. Returns "" when there is no fresh code.
+     */
+    fun readSessionPairingCode(): String {
+        // Primary channel: Settings.Global. The hook runs inside
+        // com.android.settings, which cannot write /data/local/tmp (SELinux)
+        // nor exec su, but CAN write Settings.Global via reflection — the
+        // same channel our WiFi-list dump uses successfully on this ROM.
+        try {
+            val ctx = top.cbug.adbx.App.appContext
+            val cr = ctx.contentResolver
+            val code = Settings.Global.getString(cr, "adb_x_hook_code") ?: ""
+            val ts = Settings.Global.getString(cr, "adb_x_hook_code_ts")?.toLongOrNull() ?: 0L
+            val age = System.currentTimeMillis() - ts
+            if (code.matches(Regex("\\d{6,8}")) && age in 0..SESSION_CODE_TTL_MS) {
+                Log.d(TAG, "session pairing code via Settings.Global: $code (age ${age}ms)")
+                return code
+            }
+        } catch (_: Throwable) { }
+        // Legacy/fallback channel: marker file written by an older hook.
+        val readText = {
+            val f = File("/data/local/tmp/adb_x_hook_code")
+            if (!f.exists()) "" else {
+                val age = System.currentTimeMillis() - f.lastModified()
+                if (age > SESSION_CODE_TTL_MS || age < 0) "" else {
+                    val t = f.readText().trim()
+                    if (t.matches(Regex("\\d{6,8}"))) t else ""
+                }
+            }
+        }
+        try {
+            val direct = readText()
+            if (direct.isNotEmpty()) return direct
+        } catch (_: Throwable) { }
+        return ""
     }
 
     fun readPairingCode(): String {
+        // Session code (fresh, from the hook) takes priority over the
+        // long-lived custom code and over any dumpsys guess.
+        val session = readSessionPairingCode()
+        if (session.isNotEmpty()) return session
         // 1. Direct file read
         try {
             val file = File("/data/local/tmp/adb_x_pairing_code")
@@ -300,95 +449,21 @@ object AdbHelper {
     }
 
     /**
-     * Read the temporary ADB pairing port. Multiple strategies because no
-     * single API is reliable across ROMs / Android versions:
-     *   1. Marker file written by the LSPosed hook (system_server) at the
-     *      point our hook captures the port + code from AdbDebuggingManager.
-     *      Authoritative when present.
-     *   2. `cmd statusbar` doesn't have this — fall back to grepping the
-     *      marker file in /data/local/tmp OR in our app's data dir.
-     *   3. dumpsys wifi parsing for a "pairing port" line — works on stock
-     *      Android 13+.
-     *   4. dumpsys adb parse for pairing fields.
-     *   5. service.adb.tls.port as last-ditch (often wrong, but better than
-     *      blank when the user really needs a port to try).
+     * Read the temporary ADB pairing port. ONLY a live, fresh marker from
+     * PairingReceiver (written when the system broadcasts that the user
+     * opened the pairing dialog) counts as an active pairing session.
      *
-     * Returns the empty string when nothing usable is found.
+     * Deliberately NOT used as sources:
+     *  - `dumpsys adb` -> adb_wifi.tls_port: on this ROM that is the
+     *    regular CONNECT port (e.g. 44135), present whether or not any
+     *    pairing dialog is open. Treating it as a pairing port made the
+     *    status card claim "Active on port 44135" with no pairing at all.
+     *  - `dumpsys wifi`: keeps a stale pairing-looking field forever.
+     *  - `service.adb.tls.port` / `tcp.port`: main listen ports, always set.
+     *
+     * Returns "" when there is no fresh marker.
      */
-    fun getPairingPort(): String {
-        // 1. Hook-written marker file, via the cheap probe above.
-        val marker = peekPairingMarker()
-        if (marker.isNotEmpty()) return marker
-
-        // Every remaining strategy shells out through su. Without root
-        // there is nothing to gain: executeSu() walks all four SU_PATHS
-        // entries and burns the full timeout on each, so the probes below
-        // could cost ~12 s per call — and this runs on every refresh tick.
-        if (!ShellUtils.hasRoot()) {
-            Log.d(TAG, "getPairingPort: no root, skipping dumpsys fallbacks")
-            return ""
-        }
-
-        // 2. dumpsys wifi — match ONLY pairing-specific lines. We must
-        //    avoid "adb tcp" / "tls port" because those are present in the
-        //    main (non-ephemeral) ADB listen port output and would falsely
-        //    reanimate the "配对进行中" card with the wrong port.
-        try {
-            val suResult = ShellUtils.executeSu(
-                "dumpsys wifi 2>&1 | grep -iE 'pairing_port|adb-pairing|adb_pairing' | head -10", 3000)
-            if (suResult.isSuccess() && suResult.output.isNotBlank()) {
-                val rx = Regex("(?:adb[_-]pairing[_-]port|pairing[_-]port|adb[_-]pairing)[^0-9]*?(\\d{4,5})")
-                val match = rx.find(suResult.output)
-                if (match != null) {
-                    val port = match.groupValues[1]
-                    if (port.toIntOrNull() in 1024..65535) {
-                        Log.d(TAG, "pairing port via dumpsys wifi: $port")
-                        return port
-                    }
-                }
-            }
-        } catch (_: Throwable) { }
-
-        // 3. dumpsys adb — for "adb_pair" or ephemeral port fields.
-        try {
-            val r = ShellUtils.executeSu("dumpsys adb 2>&1", 3000)
-            if (r.isSuccess() && r.output.isNotBlank()) {
-                val rx = Regex("(?:pairing|ephemeral|temp|adbd pair port)[^0-9]*?(\\d{4,5})")
-                val match = rx.find(r.output)
-                if (match != null) {
-                    val port = match.groupValues[1]
-                    if (port.toIntOrNull() in 1024..65535) {
-                        Log.d(TAG, "pairing port via dumpsys adb: $port")
-                        return port
-                    }
-                }
-            }
-        } catch (_: Throwable) { }
-
-        // 4. setprop fallback — usually NOT the pairing port on Android 14+,
-        //    and even worse, after the pairing dialog closes the system
-        //    leaves the last ephemeral port in service.adb.tls.port for
-        //    some time. Only accept the value as live when both
-        //    service.adb.tls.port AND persist.adb.tls.port are non-zero
-        //    and in the ephemeral range — any mismatch means we're looking
-        //    at a stale value from a previous dialog and should ignore it.
-        for (prop in arrayOf("service.adb.tls.port", "service.adb.tcp.port")) {
-            val persistProp = "persist." + prop.removePrefix("service.")
-            val persistOut = ShellUtils.executeSu("getprop " + persistProp, 500).output.trim()
-            val persistVal = persistOut.toIntOrNull() ?: 0
-            if (persistVal == 0) {
-                Log.d(TAG, "skip setprop " + prop + ": " + persistProp + "=0 (no active listener)")
-                continue
-            }
-            val out = ShellUtils.execute("getprop " + prop, 500).output.trim()
-            if (out.isNotEmpty() && out != "0" && out.all { it.isDigit() }
-                && out.toInt() in 1024..65535) {
-                Log.d(TAG, "pairing port via setprop " + prop + ": " + out + " (persist ok)")
-                return out
-            }
-        }
-        return ""
-    }
+    fun getPairingPort(): String = peekPairingMarker()
 
     /**
      * Clear the hook-written pairing-port marker. Called when the user
@@ -465,50 +540,61 @@ object AdbHelper {
      * AdbDebuggingManager state from outside system_server, and on
      * this ROM the hook is not injected into system_server).
      */
-    fun triggerPairing(context: Context? = null): Boolean {
-        val ctx = context ?: top.cbug.adbx.App.appContext
-        // First try: shell `service call adb 8`. This works when the
-        // caller has adb-service permission (shell uid) but can fail
-        // for app uid even via su, because the servicemanager binder
-        // gates IAdbManager by SELinux context, not by effective uid.
-        // We still try because in some setups (debug shell uid,
-        // zero-config KSU) it works.
-        Log.d(TAG, "triggerPairing: service call adb 8")
-        val suAttempt = ShellUtils.executeSu("service call adb 8", 3000)
-        if (suAttempt.isSuccess()) return true
-        // Second try: ask the system_server-side hook to fire
-        // startAdbPairing() by writing the request marker file.
-        // This requires neither Settings Intent nor special shell
-        // permissions; the LSPosed watcher picks it up within ~1 s.
-        try {
-            val requestFile = java.io.File("/data/local/tmp/adb_x_request_pair")
-            requestFile.parentFile?.mkdirs()
-            java.io.File(requestFile.absolutePath).writeText("1")
-            Log.d(TAG, "triggerPairing: wrote request marker for system_server hook")
-            return true
-        } catch (_: Throwable) { }
-        // Third try: open the Developer Options wireless-debug screen
-        // directly via Settings Intent. The user then taps "Pair device"
-        // themselves, which goes through the system-level IAdbManager
-        // and shows the dialog. We don't need any special permission to
-        // start an Activity from our own context.
-        try {
-            val devIntent = Intent(
-                Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
-            ).addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP
-            )
-            ctx.startActivity(devIntent)
-            Log.d(TAG, "triggerPairing: opened Developer Options via Settings Intent")
-            return true
-        } catch (t: Throwable) {
-            Log.w(TAG, "triggerPairing: Settings Intent fallback failed: " + t.message)
-        }
-        Log.w(TAG, "triggerPairing: all attempts failed")
-        return false
+    /** Outcome of a pairing-guide attempt. The pairing SESSION is always
+     *  started by the user in system Developer options — this app never
+     *  triggers it. We only guide the user to the right screen. */
+    sealed class PairingStart {
+        object OpenedSettings : PairingStart() // guided to Developer Options
+        object Failed : PairingStart()
     }
 
+    /**
+     * Guide the user to the system wireless-pairing screen. We deliberately
+     * do NOT start the pairing session ourselves: on this ROM every
+     * programmatic path (`service call adb`, the request-marker watcher)
+     * failed to open a real dialog and only produced false UI state. Android
+     * only mints the one-time code when the user taps "Pair device with
+     * pairing code" in Developer options, so that tap must be the user's.
+     *
+     * Our Settings hook watches the resulting dialog and records the code;
+     * the app reads the port from `dumpsys adb`.
+     */
+    fun startPairing(context: Context?): PairingStart {
+        val ctx = context ?: top.cbug.adbx.App.appContext
+        // Prefer the dedicated wireless-debugging screen (string literal:
+        // the constant is hidden on some SDK levels). Fall back to plain
+        // Developer options if the ROM doesn't handle that action.
+        val actions = arrayOf(
+            "android.settings.WIRELESS_DEBUGGING_SETTINGS",
+            Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
+        )
+        for (action in actions) {
+            try {
+                val intent = Intent(action)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                ctx.startActivity(intent)
+                Log.d(TAG, "startPairing: opened $action (user must tap Pair)")
+                return PairingStart.OpenedSettings
+            } catch (t: Throwable) {
+                Log.w(TAG, "startPairing: $action failed: ${t.message}")
+            }
+        }
+        return PairingStart.Failed
+    }
+
+    /** Backwards-compatible boolean: pairing is now always user-started. */
+    fun triggerPairing(context: Context? = null): Boolean =
+        startPairing(context) == PairingStart.OpenedSettings
+
+
+    /** True only when the boot module and both scripts are actually on disk. */
+    fun isKernelSuModuleInstalled(): Boolean {
+        return try {
+            val verify = ShellUtils.executeSu(
+                "test -d /data/adb/modules/adbx && test -x /data/adb/modules/adbx/service.sh && test -x /data/adb/modules/adbx/bin/adbx-boot-eval && echo OK", 3000)
+            verify.isSuccess() && verify.output.contains("OK")
+        } catch (_: Throwable) { false }
+    }
 
     /**
      * Install adbx as a KernelSU module so that the boot-time

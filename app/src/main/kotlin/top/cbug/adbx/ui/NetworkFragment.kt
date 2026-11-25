@@ -77,6 +77,11 @@ class NetworkFragment : Fragment() {
     private var lastPairingCode: String = ""
     private var lastLocalIp: String = ""
     private var lastExternalIp: String = ""
+    // When the current pairing session was first seen. Used to render a
+    // real countdown instead of a frozen "120 s" constant. Android
+    // expires an ephemeral pairing port after ~120 s.
+    private var pairingSessionStartMs = 0L
+    private val pairingSessionTtlMs = 120_000L
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -136,6 +141,17 @@ class NetworkFragment : Fragment() {
         swFixedPort.setOnCheckedChangeListener { _, checked ->
             AppSettings.fixedPortEnabled = checked
             AppSettings.save(requireContext())
+            // Fixed port = legacy TCP mode (adb tcpip). Enabling restarts
+            // adbd and briefly drops the wireless link — the activity warns.
+            // Disabling returns to TLS wireless debugging (random port).
+            val act = activity as? MainActivity ?: return@setOnCheckedChangeListener
+            if (checked) {
+                val target = etPort.text?.toString()?.trim()?.toIntOrNull()
+                    ?: AppSettings.fixedPort
+                act.applyFixedPort(target)
+            } else {
+                act.disableFixedPort()
+            }
         }
 
         btnApplyPort.setOnClickListener {
@@ -168,7 +184,7 @@ class NetworkFragment : Fragment() {
         }
 
         // Pairing shortcut opens the dedicated PairingActivity
-        cardPairingShortcut.setOnClickListener { act ->
+        cardPairingShortcut.setOnClickListener {
             (activity as? MainActivity)?.openPairingActivity()
         }
 
@@ -307,10 +323,14 @@ class NetworkFragment : Fragment() {
         adbEnabled: Boolean,
     ) {
         if (!isAdded) return
+        val previousPort = lastPairingPort
         lastPairingPort = pairingPort
         lastPairingCode = pairingCode
         lastLocalIp = localIp
         lastExternalIp = externalIp
+        if (pairingPort != previousPort && pairingPort.isNotBlank()) {
+            pairingSessionStartMs = System.currentTimeMillis()
+        }
 
         val hintText = when {
             pairingCode.isNotBlank() ->
@@ -357,7 +377,10 @@ class NetworkFragment : Fragment() {
             act.copyToClipboard("adb pair command", cmd)
             act.toast(getString(R.string.msg_copied, cmd))
         }
-        tvPairingCountdown.text = getString(R.string.pairing_expires_fmt, 120)
+        val leftSec = if (pairingSessionStartMs == 0L) 120 else ((pairingSessionTtlMs -
+                (System.currentTimeMillis() - pairingSessionStartMs)) / 1000L)
+            .coerceAtLeast(0).toInt()
+        tvPairingCountdown.text = getString(R.string.pairing_expires_fmt, leftSec)
     }
 
     private fun renderPairingHint(hintText: String) {
@@ -369,53 +392,37 @@ class NetworkFragment : Fragment() {
     }
 
     /**
-     * Trigger ADB pairing mode entirely from inside the app: write the
-     * pair-request marker file. The system_server-side LSPosed watcher
-     * (set up in AdbSystemHooks.hook()) picks it up within ~1 s and calls
-     * AdbDebuggingManager.startAdbPairing(), then writes the resulting
-     * port to /data/local/tmp/adb_x_pairing_port for our reader to pick
-     * up. The user does not need to touch Developer options.
+     * Guide the user to the system pairing screen. The pairing SESSION is
+     * always started by the user tapping "Pair device with pairing code" in
+     * Developer options — we never auto-start it. Our Settings hook records
+     * the one-time code once the system dialog shows it.
      */
     private fun triggerInAppPairing() {
         try {
-            val ok = AdbHelper.triggerPairing(requireContext())
-            if (ok) {
-                android.widget.Toast.makeText(
-                    requireContext(),
-                    R.string.msg_pair_requested,
-                    android.widget.Toast.LENGTH_SHORT,
-                ).show()
-                tvPairingHint.text = getString(R.string.msg_pair_requested)
-            } else {
-                android.widget.Toast.makeText(
-                    requireContext(),
-                    "Trigger failed — try Developer Options",
-                    android.widget.Toast.LENGTH_LONG,
-                ).show()
+            when (AdbHelper.startPairing(requireContext())) {
+                is AdbHelper.PairingStart.OpenedSettings -> {
+                    toast(getString(R.string.msg_pair_manual))
+                    tvPairingHint.text = getString(R.string.msg_pair_manual)
+                }
+                is AdbHelper.PairingStart.Failed -> {
+                    toast(getString(R.string.msg_pair_failed))
+                    tvPairingHint.text = getString(R.string.msg_pair_failed)
+                }
             }
-            lockPairingButton()
-            view?.postDelayed({ unstickPairingButton() }, 30_000L)
         } catch (t: Throwable) {
             Log.e("ADB_X_NetworkFr", "triggerInAppPairing failed", t)
-            android.widget.Toast.makeText(
-                requireContext(),
-                "Trigger failed: " + t.message,
-                android.widget.Toast.LENGTH_LONG,
-            ).show()
+            toast(getString(R.string.msg_pair_failed))
         }
     }
 
-    private fun lockPairingButton() {
-        btnStartPairing.isEnabled = false
-        btnStartPairing.text = getString(R.string.section_pairing_code)
+    private fun toast(msg: String) {
+        android.widget.Toast.makeText(requireContext(), msg, android.widget.Toast.LENGTH_LONG).show()
     }
 
     /**
-     * Re-enable the 开启配对模式 button and reset the hint text. Called
-     * either by the 30-second safety timer after a tap, or by
-     * renderPairing() each tick once the marker file has expired (or
-     * never appeared in the first place), so the user is never
-     * stranded on a disabled control.
+     * Keep the 开启配对模式 button enabled and reset its hint. Called by
+     * renderPairing() when no session is active so the control is never
+     * stranded in a disabled state.
      */
     private fun unstickPairingButton() {
         if (!isAdded) return
